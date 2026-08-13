@@ -1,5 +1,6 @@
 import { ThemeToggle } from "./ThemeToggle";
 import { AuthControl } from "./AuthControl";
+import { SettingsButton } from "./SettingsButton";
 import type { AuthSession } from "@/lib/types";
 
 export type Status = "idle" | "connecting" | "streaming" | "connected" | "error";
@@ -23,9 +24,10 @@ const STATUS_COLOR: Record<Status, string> = {
 interface TopBarProps {
   status: Status;
   authSession: AuthSession | null;
+  onSettingsSaved: () => void;
 }
 
-export function TopBar({ status, authSession }: TopBarProps) {
+export function TopBar({ status, authSession, onSettingsSaved }: TopBarProps) {
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-surface/95 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
@@ -43,6 +45,7 @@ export function TopBar({ status, authSession }: TopBarProps) {
         </div>
         <div className="flex items-center gap-4">
           <AuthControl session={authSession} />
+          {authSession?.authenticated && <SettingsButton onSaved={onSettingsSaved} />}
           <div className="flex items-center gap-2 text-sm text-ink-muted">
             <span className={`h-2 w-2 rounded-full ${STATUS_COLOR[status]}`} />
             {STATUS_COPY[status]}

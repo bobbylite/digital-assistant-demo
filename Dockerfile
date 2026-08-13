@@ -15,19 +15,13 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Only the NEXT_PUBLIC_* connection defaults need to exist at build time —
-# Next.js inlines them into the client bundle during `next build`. Everything
-# else (OIDC_*, AGENT_*, SESSION_SECRET) is read from process.env at request
-# time by server-only code and belongs at *runtime* (see docker-compose.yml's
-# env_file), never baked into the image. These three are non-secret UI
-# pre-fill values, not credentials — see .env.local.example.
-ARG NEXT_PUBLIC_DEFAULT_REGION=us-east-2
-ARG NEXT_PUBLIC_DEFAULT_QUALIFIER=DEFAULT
-ARG NEXT_PUBLIC_DEFAULT_HARNESS_ARN=
-ENV NEXT_PUBLIC_DEFAULT_REGION=$NEXT_PUBLIC_DEFAULT_REGION \
-    NEXT_PUBLIC_DEFAULT_QUALIFIER=$NEXT_PUBLIC_DEFAULT_QUALIFIER \
-    NEXT_PUBLIC_DEFAULT_HARNESS_ARN=$NEXT_PUBLIC_DEFAULT_HARNESS_ARN \
-    NEXT_TELEMETRY_DISABLED=1
+# No build-time config needed at all: every env var this app reads (region/
+# qualifier/harness ARN defaults, OIDC_*, AGENT_*, SESSION_SECRET) is
+# server-only and read from process.env at request time — none of it is
+# NEXT_PUBLIC_-inlined, on purpose, so the same image works for any
+# deployment's config and the Settings panel can change the non-OIDC half of
+# it at runtime without a rebuild. See CLAUDE.md's Settings section.
+ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build
 

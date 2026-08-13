@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
   // full dependency tree. That's what makes the Docker runner stage small
   // and lets it skip `npm install` entirely — see Dockerfile.
   output: "standalone",
+  allowedDevOrigins: [
+    "localhost"
+  ],
 };
 
 export default nextConfig;

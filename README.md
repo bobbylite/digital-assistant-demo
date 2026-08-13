@@ -178,6 +178,24 @@ each encrypted independently, and **the exchanged token is what actually
 gets sent to AgentCore** once it exists — it now takes priority over both
 your plain session token and a manually pasted JWT.
 
+## Configure most of it from the app, not just at deploy time
+
+Deploying this somewhere shouldn't mean filling in every env var before the
+first `docker run`. Only `OIDC_*`/`SESSION_SECRET` actually have to be set
+up front — they're what make signing in possible at all, so there's no way
+around setting them first. Everything else — the Connection panel's
+region/qualifier/harness-ARN defaults, and the agent's own client
+credentials (`AGENT_*`) — can be left blank and filled in later from the
+gear icon in the top bar, which appears once you're signed in.
+
+Saving a setting there does two things: applies immediately to the running
+server (no restart needed to take effect) and writes back into
+`.env.local` on disk, so it's still there next time the process starts.
+The agent's client secret is treated the same way pasted-JWT and session
+tokens are elsewhere in this app — the settings panel never reads it back
+from the server once saved, only whether one is currently set, so there's
+no round trip where it could leak into a response body you didn't ask for.
+
 ## Live OpenTelemetry — tokens, identity, audit
 
 Every identity-bearing call this console makes — sign-in, sign-out, the
@@ -265,10 +283,12 @@ docker compose up --build
 ```
 
 Open [http://localhost:3000](http://localhost:3000). `docker compose down`
-to stop it. See the Docker section in `CLAUDE.md` for what the image
-actually contains, how the three `NEXT_PUBLIC_*` Connection-panel defaults
-get baked in vs. everything else staying runtime-only, and the health
-check at `/api/health`.
+to stop it. Settings saved from the in-app Settings panel (see above) apply
+immediately either way; to have them survive `docker compose down` too,
+uncomment the `.env.local` volume mount in `docker-compose.yml` — its
+comment explains a footgun to avoid first. See the Docker section in
+`CLAUDE.md` for what the image actually contains and the health check at
+`/api/health`.
 
 ## How it works
 
@@ -304,14 +324,19 @@ live in `CLAUDE.md` — read that before making structural changes.
 ## Environment variables
 
 Next.js has no separate config-file convention — it reads `.env.local` via
-`process.env`. Only `NEXT_PUBLIC_*`-prefixed vars reach the browser bundle;
-everything else (`OIDC_CLIENT_SECRET`, `AGENT_CLIENT_SECRET`, `SESSION_SECRET`,
-all of the `OIDC_*`/`AGENT_*` config) is server-only by construction, read
-from separate modules (`src/lib/oidc.ts`, `src/lib/auth-session.ts`) that a
-client component can't import. See `.env.local.example` for the full list.
-The JWT is never one of them either way — pasted manually, it's typed into
-the UI at runtime; via OIDC or agent auth, the resulting token never exists
-as an env var or a file, only inside its own encrypted cookie.
+`process.env`. Everything here is server-only by construction (`OIDC_CLIENT_SECRET`,
+`AGENT_CLIENT_SECRET`, `SESSION_SECRET`, all of the `OIDC_*`/`AGENT_*`/
+`DEFAULT_*` config), read from separate modules (`src/lib/oidc.ts`,
+`src/lib/auth-session.ts`, `src/lib/settings.ts`) that a client component
+can't import — nothing here is `NEXT_PUBLIC_`-inlined into the browser
+bundle, including the Connection panel's defaults, which is exactly what
+lets the Settings panel (see above) change them without a rebuild. See
+`.env.local.example` for the full list, and note that only the `OIDC_*`/
+`SESSION_SECRET` entries there actually need to be set before you start the
+app — the rest can be configured from the UI afterward. The JWT is never
+one of them either way — pasted manually, it's typed into the UI at
+runtime; via OIDC or agent auth, the resulting token never exists as an env
+var or a file, only inside its own encrypted cookie.
 
 ## Development
 

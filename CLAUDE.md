@@ -434,6 +434,72 @@ span's attributes. Same "recreate the mock, don't trust a build alone"
 rule as the OIDC and agent-auth sections above — the script was temporary
 and deleted after use.
 
+## Settings (runtime-editable config)
+
+Everything env-configurable in this app splits into two groups:
+`OIDC_*`/`SESSION_SECRET`, which have to be correct *before* anyone can sign
+in (there's no bootstrapping path around that — chicken/egg), and
+everything else (connection defaults, `AGENT_*`), which is now editable
+from an in-app Settings panel (gear icon in the top bar, visible once
+signed in) instead of only at deploy time. The intended deploy story: ship
+a container with just the OIDC bits set, sign in once, then fill in the
+rest through the UI — see the Docker section below for what that requires.
+
+**Files:**
+- `src/lib/settings.ts` — server-only. `getConnectionDefaults()` /
+  `getRedactedSettings()` read straight from `process.env` (never a cache —
+  a setting saved a moment ago must read back correctly on the very next
+  request). `applySettings(input)` does two things for every changed key:
+  updates `process.env` immediately (so the change is live for the *next*
+  request, no restart) and best-effort patches `.env.local` on disk (so it
+  survives one). Those two are allowed to disagree — a failed disk write
+  returns `{ persisted: false, warning }` instead of throwing, so a
+  container running with a read-only or unmounted `.env.local` still lets
+  you change settings for the life of that process rather than making the
+  feature unusable there. `patchEnvFile()` is a surgical line-based patch
+  (rewrite matching `KEY=` lines in place, append new ones), not a
+  parse-and-regenerate — the latter would silently drop every comment in
+  the file on the first save.
+- `src/lib/oidc.ts` — `resetAgentConfiguration()`. The cached agent
+  `Configuration` from `getAgentConfiguration()` has the *old*
+  `AGENT_CLIENT_ID`/`AGENT_CLIENT_SECRET` baked into it by
+  `client.discovery()`; updating `process.env` alone doesn't change that.
+  `applySettings()` calls this whenever either key is part of the update,
+  forcing the next `getAgentConfiguration()` call to re-discover with the
+  new credentials instead of silently keeping using the old ones.
+- `src/app/api/config/route.ts` — `GET`, public, no auth. Returns
+  `{ defaultRegion, defaultQualifier, defaultHarnessArn }`. This replaced
+  the old `NEXT_PUBLIC_DEFAULT_*` build-time-inlined constants (see
+  Environment variables below) — `AgentConsole.tsx` fetches this on mount
+  instead of importing a baked-in module constant, which is what makes
+  these editable without a rebuild in the first place. Public because
+  these were already visible in the client bundle before this change;
+  nothing about moving them to a runtime fetch made them more sensitive.
+- `src/app/api/settings/route.ts` — `GET`/`POST`, gated on
+  `getUserSession()` being non-null — same bar `/api/auth/agent-token`
+  already uses, no separate admin/role concept exists in this app. `GET`
+  never returns `AGENT_CLIENT_SECRET`, only `hasAgentClientSecret: boolean`
+  — the settings form shows a "Unchanged" placeholder instead of an empty
+  field that would misleadingly look unset. `POST` only overwrites the
+  secret if the request body actually includes a non-empty
+  `agentClientSecret`; omitting the key means "leave it alone." Wrapped in
+  an OTel `settings.update` span recording *which fields* changed
+  (`settings.fields`, a comma list of field names) — never a value, so the
+  secret's actual contents never touch a span even indirectly. See the
+  OpenTelemetry section above for why that pattern exists everywhere else
+  in this app too.
+- `src/components/SettingsButton.tsx` — self-contained client component
+  (like `AgentAuthButton`), owns its own open/loading/saving state. Fetches
+  current settings on open (not eagerly on mount — no reason to hit the
+  endpoint before anyone's looked at it), calls the `onSaved` prop after a
+  successful save so `AgentConsole` can re-fetch `/api/auth/session` and
+  pick up a newly-configured `agentConfigured: true` without a page reload.
+- `.env.local.example` — the three connection-default vars dropped their
+  `NEXT_PUBLIC_` prefix (`DEFAULT_REGION`/`DEFAULT_QUALIFIER`/
+  `DEFAULT_HARNESS_ARN`) since they're no longer client-bundle-inlined.
+  If you're looking for old-named env vars from before this feature, this
+  is the rename to make.
+
 ## Docker
 
 `docker compose up --build` builds and runs the whole app. No `.env.local`
@@ -453,14 +519,11 @@ would.
   of source changes so editing app code doesn't invalidate the `npm ci`
   layer), `builder` (runs `next build` against the standalone output),
   `runner` (the shipped image — just `.next/standalone`, `.next/static`,
-  and `public`, running as a non-root `nextjs` user on Alpine). No
-  build-time secrets: only the three non-secret `NEXT_PUBLIC_*` Connection-
-  panel defaults are accepted as build `ARG`s (Next inlines `NEXT_PUBLIC_*`
-  into the client bundle at build time, so they *have* to be build-time,
-  not runtime env — this is a Next.js constraint, not a choice made here).
-  Everything else (`OIDC_*`, `AGENT_*`, `SESSION_SECRET`) is read from
-  `process.env` by server-only code at request time and belongs at
-  *runtime* only — see `docker-compose.yml`'s `env_file`. Health check runs
+  and `public`, running as a non-root `nextjs` user on Alpine). **No
+  build-time config at all** — every env var this app reads, including the
+  connection defaults, is server-only and read from `process.env` at
+  request time (see Settings above), so the same image works for any
+  deployment's config without a rebuild. Health check runs
   `node -e "fetch(...)"` against `/api/health` rather than adding `curl`
   or `wget` to the Alpine image — Node 18+ has `fetch` built in, so this
   is one fewer package in the image for a check this simple.
@@ -471,16 +534,21 @@ would.
 - `docker-compose.yml` — `env_file: [{path: .env.local, required: false}]`
   wires the same file `npm run dev` already reads straight into the
   container at runtime, no separate Docker-specific env file to maintain.
-  Build `args` for the three `NEXT_PUBLIC_*` values default to the same
-  values `src/lib/env.ts` already falls back to (`us-east-2` / `DEFAULT` /
-  blank) via `${VAR:-default}` shell-style interpolation, pulled from your
-  shell env or Compose's own auto-loaded `.env` (a different file from
-  `.env.local` by Compose convention). To bake your actual `.env.local`
-  values into the build instead of leaving them as post-load UI edits, run
-  `docker compose --env-file .env.local up --build` — that flag is what
-  points Compose's variable-interpolation source at `.env.local` instead
-  of the default `.env`; the service's own `env_file:` entry (above)
-  handles the *runtime* container env either way and doesn't need it.
+  The `volumes:` bind mount for `.env.local` is commented out by default —
+  **do not uncomment it unless `.env.local` already exists on the host.**
+  Docker's bind-mount behavior for a source path that doesn't exist yet is
+  to silently create a *directory* there instead of a file (confirmed
+  directly: `docker compose up` against a compose file bind-mounting a
+  nonexistent `./testfile` created a `testfile/` directory on the host,
+  not an error) — which then breaks both `env_file` (can't read a
+  directory as env syntax) and every Settings-panel save (`patchEnvFile()`
+  will throw `EISDIR`, surfaced as a non-persisted warning rather than a
+  crash, but still not what you want). Run
+  `cp .env.local.example .env.local` first, *then* uncomment the volume
+  line, if you want settings saved from the UI to survive
+  `docker compose down`. Without the mount, Settings changes still apply
+  immediately to the running container (same `process.env` update either
+  way) — they just don't outlive it.
 - `.dockerignore` — excludes `.env*` except `.env.local.example`
   (mirroring `.gitignore`'s own exception, see Environment variables
   below), plus `node_modules`, `.next`, `.git`, and docs — keeps the build
@@ -522,21 +590,26 @@ npx tsc --noEmit  # typecheck
 
 Next.js has no separate "env config file" convention like some frameworks —
 it reads `.env.local` (gitignored, machine-specific; `.env`, `.env.production`,
-etc. also work but aren't used here) directly via `process.env.NAME` at
-build/dev time. Only vars prefixed `NEXT_PUBLIC_` get inlined into the
-client bundle; anything else is server-only. Since `AgentConsole.tsx` is a
-`"use client"` component, its defaults must use that prefix.
+etc. also work but aren't used here) directly via `process.env.NAME`.
+Historically, vars prefixed `NEXT_PUBLIC_` got inlined into the client
+bundle at build time for anything a `"use client"` component needed — this
+app no longer uses that mechanism for anything (see Settings above for why:
+build-time inlining is incompatible with changing a value at runtime without
+a rebuild), so every var here, including the connection defaults, is plain
+server-only `process.env`, read fresh per-request.
 
-- `src/lib/env.ts` — client-safe connection defaults only
-  (`process.env.NEXT_PUBLIC_*` with fallbacks), re-exported as plain
-  constants. Safe to import from a `"use client"` file.
-- `src/lib/oidc.ts` — server-only OIDC config (`OIDC_*`). **Never** import
+- `src/lib/settings.ts` — connection defaults (`DEFAULT_*`) and agent
+  config (`AGENT_*`), both readable and (past initial deploy) writable at
+  runtime — see Settings above.
+- `src/lib/oidc.ts` — server-only OIDC config (`OIDC_*`), read-only via env
+  (not editable through Settings — see above for why). **Never** import
   this from a `"use client"` file — it's the module boundary that keeps
   `OIDC_CLIENT_SECRET` out of the browser bundle. There's no build-time
   guard against getting this wrong beyond "it's just `undefined`" client-side
   if you did; don't rely on that, keep the boundary clean by construction.
 - `src/lib/auth-session.ts` — same server-only rule, reads `SESSION_SECRET`.
-- `.env.local` — your real values (gitignored, never committed).
+- `.env.local` — your real values (gitignored, never committed). Also the
+  file the Settings panel patches in place at runtime — see Settings above.
 - `.env.local.example` — committed template; the `.gitignore` has an
   explicit `!.env*.example` exception so template files stay trackable
   despite the broader `.env*` ignore rule. **Never fill in a real secret

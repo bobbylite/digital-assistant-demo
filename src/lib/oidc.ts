@@ -1,9 +1,9 @@
 import * as client from "openid-client";
 
 /**
- * Server-only. Never import this from a "use client" component — unlike
- * src/lib/env.ts, nothing here is NEXT_PUBLIC_-prefixed on purpose, since
- * OIDC_CLIENT_SECRET and SESSION_SECRET must never reach the browser bundle.
+ * Server-only. Never import this from a "use client" component — nothing
+ * here is NEXT_PUBLIC_-prefixed, on purpose, since OIDC_CLIENT_SECRET and
+ * SESSION_SECRET must never reach the browser bundle.
  */
 
 function required(name: string): string {
@@ -134,4 +134,15 @@ export function getAgentConfiguration(): Promise<client.Configuration> {
       });
   }
   return agentConfigPromise;
+}
+
+/**
+ * Called by src/lib/settings.ts whenever AGENT_CLIENT_ID/AGENT_CLIENT_SECRET
+ * change at runtime (via the Settings panel). The cached Configuration above
+ * has the *old* client_id/secret baked into it by client.discovery() — just
+ * updating process.env isn't enough, the next getAgentConfiguration() call
+ * needs to re-discover from scratch to pick up the new credentials.
+ */
+export function resetAgentConfiguration(): void {
+  agentConfigPromise = null;
 }

@@ -2,15 +2,6 @@ services:
   app:
     build:
       context: .
-      args:
-        # Only affects the pre-filled Connection panel defaults (non-secret).
-        # Pulled from your shell env or a `.env` Compose auto-loads; falls
-        # back to these if neither is set — so `docker compose up --build`
-        # works with zero setup. To bake in your own .env.local's values
-        # instead, run `docker compose --env-file .env.local up --build`.
-        NEXT_PUBLIC_DEFAULT_REGION: ${NEXT_PUBLIC_DEFAULT_REGION:-us-east-2}
-        NEXT_PUBLIC_DEFAULT_QUALIFIER: ${NEXT_PUBLIC_DEFAULT_QUALIFIER:-DEFAULT}
-        NEXT_PUBLIC_DEFAULT_HARNESS_ARN: ${NEXT_PUBLIC_DEFAULT_HARNESS_ARN:-}
     ports:
       - "3000:3000"
     # Optional and gitignored, same file `npm run dev` reads — see
@@ -19,4 +10,15 @@ services:
     env_file:
       - path: .env.local
         required: false
+    # Uncomment to let the in-app Settings panel's writes survive
+    # `docker compose down` — without this, saving a setting still takes
+    # effect immediately (applied to the running container's process.env),
+    # it just won't outlive the container. Requires .env.local to already
+    # exist on the host *before* you uncomment this and start the container
+    # — bind-mounting a path that doesn't exist yet makes Docker silently
+    # create a directory there instead of a file, which is worse than not
+    # mounting it at all. `cp .env.local.example .env.local` first if you
+    # haven't already, then uncomment:
+    # volumes:
+    #   - ./.env.local:/app/.env.local
     restart: unless-stopped
