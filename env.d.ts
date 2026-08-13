@@ -20,5 +20,8 @@ declare namespace NodeJS {
     readonly AGENT_CLIENT_ID?: string;
     readonly AGENT_CLIENT_SECRET?: string;
     readonly AGENT_SCOPE?: string;
+    // Scope requested on the RFC 8693 token exchange (distinct from
+    // AGENT_SCOPE above, which is for the client_credentials grant).
+    readonly AGENT_EXCHANGE_SCOPE?: string;
   }
 }

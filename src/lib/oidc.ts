@@ -97,10 +97,11 @@ export function getOidcConfiguration(): Promise<client.Configuration> {
  * does its own discovery() call against the same OIDC_DISCOVERY_URL rather
  * than reusing getOidcConfiguration()'s cached Configuration.
  *
- * This token is not wired into /api/invoke yet. It's a building block for a
- * later RFC 8693 token exchange step (combining the user's token as
- * subject_token with this one as actor_token — see AWS's own on-behalf-of
- * pattern, README) — not a replacement for the user session.
+ * This token becomes the actor_token in an RFC 8693 token exchange
+ * immediately after — see /api/auth/agent-token/route.ts — combined with
+ * the user's own OIDC token (subject_token) into a single delegated token
+ * that carries both identities. That final exchanged token, not this raw
+ * one, is what /api/invoke actually sends to AgentCore when present.
  */
 export function isAgentConfigured(): boolean {
   return Boolean(process.env.AGENT_CLIENT_ID && process.env.AGENT_CLIENT_SECRET && process.env.OIDC_DISCOVERY_URL && process.env.SESSION_SECRET);
@@ -112,6 +113,10 @@ export function getAgentEnv() {
     clientSecret: required("AGENT_CLIENT_SECRET"),
     discoveryUrl: required("OIDC_DISCOVERY_URL"),
     scope: process.env.AGENT_SCOPE?.trim() || "agent",
+    // Scope requested on the RFC 8693 exchange itself — distinct from the
+    // scope above, which is for the client_credentials grant that produces
+    // the actor_token in the first place.
+    exchangeScope: process.env.AGENT_EXCHANGE_SCOPE?.trim() || "agent:exchange",
   };
 }
 

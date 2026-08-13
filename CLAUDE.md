@@ -113,9 +113,10 @@ working exactly as before. Don't make any of this required.
   on the PingOne application, same idea as the login redirect URI). Any
   failure in that second part (unregistered sign-off URL, IdP down) fails
   soft to a local-only redirect home — never leaves the user stuck.
-- `src/app/api/invoke/route.ts` — prefers the session cookie's access token
-  over `body.jwt` when both are absent/present; falls back to `body.jwt` if
-  there's no session. This is why `InvokeRequestBody.jwt` is optional now.
+- `src/app/api/invoke/route.ts` — bearer token priority: exchanged token >
+  session cookie's access token > `body.jwt`. Falls back down that chain as
+  each is absent. This is why `InvokeRequestBody.jwt` is optional now. See
+  the Agent authentication section below for the exchanged-token piece.
 - `src/components/AuthControl.tsx` / `TopBar.tsx` / `AgentConsole.tsx` — UI.
   `AgentConsole` fetches `/api/auth/session` once on mount (not on every
   render) and holds it in state; `ConnectionPanel`'s JWT field is replaced
@@ -177,17 +178,30 @@ caught, in case you hit them again:
   falsely look like a client_id mismatch. That's a mock-server bug, not an
   app bug, but it's easy to misread as the latter.
 
-## Agent authentication (client credentials)
+## Agent authentication + RFC 8693 token exchange
 
-A second, independent identity: the *agent itself* authenticating to
-PingOne via OAuth 2.0 Client Credentials Grant — no user, no browser
-redirect, no consent screen, just the agent proving its own identity with
-`client_id`/`client_secret` directly at the token endpoint. This is a
-building block for a later RFC 8693 token exchange step (the agent's token
-as `actor_token`, the user's OIDC token as `subject_token` — mirrors AWS's
-own on-behalf-of pattern, see README) — **not currently wired into
-`/api/invoke`**. Don't assume this token does anything yet beyond exist in
-its own cookie; the exchange step is future work.
+Clicking "Authenticate Agent" runs a two-step server-side flow, both steps
+inside the single `POST /api/auth/agent-token` request:
+
+1. **Client Credentials Grant** — a second, independent PingOne application
+   (the agent's own `client_id`/`client_secret`, not the user-login one)
+   authenticates directly to the token endpoint. No user, no browser
+   redirect, no consent screen — the agent just proves its own identity.
+   The result (`actor_token`) is sealed into `agentcore_agent_token`.
+2. **RFC 8693 Token Exchange** — that `actor_token`, together with the
+   signed-in user's own OIDC access token as `subject_token`, gets POSTed
+   back to the *same* token endpoint with
+   `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` (HTTP Basic
+   auth, agent's credentials). The result is one delegated access token
+   carrying both identities — real user *and* this specific agent — sealed
+   into `agentcore_exchanged_token`. **This is the token `/api/invoke`
+   actually sends to AgentCore** when present (see priority order there).
+
+Step 2 requires step 1's result, and requires the user to already be
+signed in (there's no subject_token otherwise) — `/api/auth/agent-token`
+checks for a user session *before* doing anything else and fails fast with
+a clear message if there isn't one, rather than burning a client-credentials
+round trip on a flow that can't finish.
 
 **Files:**
 - `src/lib/oidc.ts` — `getAgentConfiguration()` does its own independent
@@ -196,19 +210,39 @@ its own cookie; the exchange step is future work.
   cached `Configuration` — deliberate, so agent auth doesn't require
   `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` (user login) to be configured, or
   vice versa. Also pinned to `client_secret_basic`, same reasoning as the
-  user-login config.
-- `src/lib/auth-session.ts` — `AgentTokenData` seals into its own cookie
-  (`agentcore_agent_token`), separate from `agentcore_session`. Kept apart
-  on purpose: these are two distinct tokens (user identity vs. agent
-  identity) that get *combined* in the future exchange step, not one
-  replacing the other. Short max-age (1 hour) — client-credentials tokens
-  are meant to be re-minted often, not treated as a long-lived session.
+  user-login config. The same `Configuration` (and thus the same client
+  auth) is reused for both the client_credentials grant and the token
+  exchange — both are the agent authenticating itself, just for different
+  grant types.
+- `src/lib/auth-session.ts` — three *separate* cookies:
+  `agentcore_session` (user, from OIDC login), `agentcore_agent_token`
+  (agent's own actor_token), `agentcore_exchanged_token` (the final
+  delegated token). Kept apart rather than collapsed into one, because
+  they're genuinely three different things with independent lifecycles —
+  re-running the exchange doesn't require re-running login, and the raw
+  agent token stays valid/inspectable even though `/api/invoke` doesn't use
+  it directly. All three: short max-age (agent/exchanged: 1 hour; these are
+  meant to be re-minted often, not treated as long-lived sessions).
 - `src/app/api/auth/agent-token/route.ts` — **POST that returns JSON, not a
-  redirect.** Unlike `/login`, Client Credentials Grant needs zero browser
-  interaction — it's a single back-channel call to the token endpoint. The
-  browser's `fetch` just gets `{ ok: true }` or `{ error: "..." }` back; the
-  token itself never appears in the response body, only inside the cookie
-  this sets server-side.
+  redirect**, for both steps. Unlike `/login`, neither Client Credentials
+  Grant nor Token Exchange needs any browser interaction — both are pure
+  back-channel calls to the token endpoint. The browser's `fetch` just gets
+  `{ ok: true }` or `{ error: "..." }` back; neither resulting token ever
+  appears in a response body, only inside their cookies, set server-side.
+  No dedicated `openid-client` helper exists for the token-exchange grant
+  type (it's not one of the common ones like `authorization_code` or
+  `refresh_token`), so this uses `genericGrantRequest()` — that function's
+  own doc comment cites RFC 8693 Token Exchange as its primary example.
+  If step 1 succeeds but step 2 fails, the error response says so
+  explicitly ("Agent authenticated, but token exchange failed: ...")
+  rather than just surfacing the exchange error alone — otherwise a
+  half-succeeded state is confusing to read.
+- `src/app/api/invoke/route.ts` — bearer token priority is now
+  **exchanged > user session > manually pasted JWT**. The exchanged token
+  wins whenever it exists because it's the one actually shaped to satisfy
+  AgentCore's authorizer (real user `sub`, agent's own `client_id`); the
+  other two are documented fallbacks from earlier in this build, not
+  removed.
 - `src/components/AgentAuthButton.tsx` — client component, self-contained
   (owns its own loading/success/error state, doesn't need session state
   from a parent beyond the two booleans `configured` /
@@ -220,24 +254,36 @@ its own cookie; the exchange step is future work.
   animate the *first* time.
 
 **Env:** `AGENT_CLIENT_ID`, `AGENT_CLIENT_SECRET`, `AGENT_SCOPE` (default
-`"agent"`). No separate discovery URL — reuses `OIDC_DISCOVERY_URL`.
-`isAgentConfigured()` also requires `SESSION_SECRET` (needed to seal the
-cookie) but deliberately does *not* require the `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`
-pair.
+`"agent"`, used on the client_credentials grant), `AGENT_EXCHANGE_SCOPE`
+(default `"agent:exchange"`, used on the token-exchange request — a
+*different* scope parameter than `AGENT_SCOPE`, don't conflate them). No
+separate discovery URL — reuses `OIDC_DISCOVERY_URL`. `isAgentConfigured()`
+also requires `SESSION_SECRET` (needed to seal the cookies) but deliberately
+does *not* require the `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` pair — though in
+practice the exchange step needs a user session to exist regardless, since
+sign-in uses that pair.
 
-**Naming:** the button says "Authenticate," not "Authorize" — Client
-Credentials Grant is the agent proving its own identity (authentication);
-"authorize" implies a resource owner granting consent, which doesn't happen
-here (no user in the loop at all). Keep that distinction if you touch the
-copy.
+**Naming:** the button says "Authenticate," not "Authorize" — both the
+client_credentials grant and the token exchange are the agent proving
+identity (authentication), not a resource owner granting consent
+(authorization) — there's no user-facing consent step in either. Keep that
+distinction if you touch the copy.
 
 **Tested against a mock IdP** (extended the same one used for OIDC
-login/logout, with `grant_type=client_credentials` support and a second
-registered client of `kind: "agent"`) via `curl` with a cookie jar (`-c`/`-b`)
-rather than a browser — confirmed the cookie is set correctly, that
-`/api/auth/session`'s `agentAuthenticated` reflects it, that it works with
-*no* user session present (confirms independence), and that a wrong secret
-surfaces the real `invalid_client` detail rather than a generic error. Same
+login/logout, with `grant_type=client_credentials` and
+`grant_type=urn:ietf:params:oauth:grant-type:token-exchange` support, a
+second registered client of `kind: "agent"`, and real signature
+verification of the subject/actor tokens before minting an exchanged one)
+via `curl` with a cookie jar (`-c`/`-b`) driving the actual routes — full
+login → agent-token (both steps) → confirmed all three cookies land
+correctly, that `agentAuthenticated` in `/api/auth/session` only flips true
+once the *exchange* succeeds (not just the client_credentials half), that
+attempting the button without signing in first fails fast with the right
+message, and that `/api/invoke` genuinely prefers the exchanged token —
+proved by presenting *only* the exchanged cookie (no user session cookie at
+all) and confirming the request still reached real AWS (got a real
+`"Invalid harness ARN format"` response back, not the "no bearer token"
+401) rather than trusting that it merely avoided an error. Same
 "recreate the mock, don't trust a build alone" rule as the OIDC section above.
 
 ## Commands
@@ -350,14 +396,16 @@ it; they're not redundant.
   event console), both via `next/font/google`, wired in `layout.tsx`.
 - Client components are explicit (`"use client"`); keep new presentational
   pieces as plain server components unless they need state/handlers.
-- **Nothing token-shaped gets persisted server-side or logged**, manual-paste
-  or OIDC alike. Manual: the JWT lives in React state + `sessionStorage`
-  (client only), forwarded per-request. OIDC: the access token lives only
-  inside the encrypted `agentcore_session` cookie; the one place it exists
-  as plaintext server-side is the brief window inside `/api/invoke`'s
-  request handler after decrypting the cookie and before the upstream
-  `fetch` call. Don't add logging of `jwt`, `Authorization`, `accessToken`,
-  or the raw session cookie value anywhere.
+- **Nothing token-shaped gets persisted server-side or logged**, manual-paste,
+  OIDC, or agent/exchange alike. Manual: the JWT lives in React state +
+  `sessionStorage` (client only), forwarded per-request. Everything else
+  (user session, agent's own token, exchanged token) lives only inside its
+  own encrypted cookie (`agentcore_session` / `agentcore_agent_token` /
+  `agentcore_exchanged_token`); the one place any of them exists as
+  plaintext server-side is the brief window inside a request handler after
+  decrypting and before the next network call. Don't add logging of `jwt`,
+  `Authorization`, `accessToken`, `subject_token`, `actor_token`, or any raw
+  cookie value anywhere.
 - This app has no test suite; verify changes with `npm run dev` + a real
   (or at least well-formed) JWT and harness ARN, and watch the "Raw event
   stream" panel — it's the fastest way to see whether a protocol-level

@@ -12,10 +12,12 @@ import { EncryptJWT, jwtDecrypt, type JWTPayload } from "jose";
 const SESSION_COOKIE = "agentcore_session";
 const PENDING_COOKIE = "agentcore_oidc_pending";
 const AGENT_TOKEN_COOKIE = "agentcore_agent_token";
+const EXCHANGED_TOKEN_COOKIE = "agentcore_exchanged_token";
 
 const PENDING_MAX_AGE = 10 * 60; // minutes to complete the IdP redirect round trip
 const SESSION_MAX_AGE = 8 * 60 * 60; // hard cap regardless of the access token's own exp
 const AGENT_TOKEN_MAX_AGE = 60 * 60; // client-credentials tokens are typically short-lived; re-auth beats a stale cache
+const EXCHANGED_TOKEN_MAX_AGE = 60 * 60; // same reasoning as the agent token above
 
 function sessionKey(): Uint8Array {
   const secret = process.env.SESSION_SECRET;
@@ -142,4 +144,37 @@ export async function getAgentToken(): Promise<AgentTokenData | null> {
 export async function clearAgentToken(): Promise<void> {
   const store = await cookies();
   store.delete(AGENT_TOKEN_COOKIE);
+}
+
+// The result of the RFC 8693 exchange: subject_token (user, from
+// UserSession above) + actor_token (agent, from AgentTokenData above)
+// combined into one delegated token that carries both identities. This is
+// the token that actually gets sent to AgentCore once it exists — see the
+// priority order in /api/invoke/route.ts. Separate cookie from both inputs
+// rather than overwriting either one, since the raw agent token and user
+// session both stay independently meaningful (e.g. re-running the exchange
+// doesn't require re-running the user's login).
+export interface ExchangedTokenData {
+  accessToken: string;
+}
+
+export async function setExchangedToken(data: ExchangedTokenData, expiresInSeconds?: number): Promise<void> {
+  const maxAge = Math.min(
+    expiresInSeconds && expiresInSeconds > 0 ? expiresInSeconds : EXCHANGED_TOKEN_MAX_AGE,
+    EXCHANGED_TOKEN_MAX_AGE
+  );
+  const store = await cookies();
+  store.set(EXCHANGED_TOKEN_COOKIE, await seal(data, maxAge), cookieOptions(maxAge));
+}
+
+export async function getExchangedToken(): Promise<ExchangedTokenData | null> {
+  const store = await cookies();
+  const raw = store.get(EXCHANGED_TOKEN_COOKIE)?.value;
+  if (!raw) return null;
+  return unseal<ExchangedTokenData>(raw);
+}
+
+export async function clearExchangedToken(): Promise<void> {
+  const store = await cookies();
+  store.delete(EXCHANGED_TOKEN_COOKIE);
 }

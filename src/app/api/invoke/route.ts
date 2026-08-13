@@ -1,6 +1,6 @@
 import { EventStreamCodec } from "@smithy/eventstream-codec";
 import { toUtf8, fromUtf8 } from "@smithy/util-utf8";
-import { getUserSession } from "@/lib/auth-session";
+import { getExchangedToken, getUserSession } from "@/lib/auth-session";
 import type { InvokeRequestBody } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -39,12 +39,14 @@ export async function POST(request: Request) {
     );
   }
 
-  // A signed-in OIDC session takes precedence over a manually pasted JWT —
-  // it's the more trustworthy path (server-verified, never exposed to the
-  // browser) and this is the only place the decrypted access token exists
-  // in memory, for exactly as long as this request takes.
-  const session = await getUserSession();
-  const bearerToken = session?.accessToken ?? body.jwt;
+  // Priority: RFC 8693 exchanged token (carries both the real user's
+  // identity and the agent's own client_id — the token AgentCore's
+  // authorizer actually wants) > plain OIDC session token > manually pasted
+  // JWT. Each is server-verified and never exposed to the browser except
+  // the last, which the user typed in themselves. This is the only place
+  // any of them exists in memory, for exactly as long as this request takes.
+  const [exchanged, session] = await Promise.all([getExchangedToken(), getUserSession()]);
+  const bearerToken = exchanged?.accessToken ?? session?.accessToken ?? body.jwt;
 
   if (!bearerToken) {
     return Response.json(

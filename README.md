@@ -144,29 +144,39 @@ JWT verification — PKCE, state/nonce CSRF checks, and JWKS-based signature
 verification are exactly the kind of protocol logic that's easy to get
 subtly, quietly wrong by hand, and this isn't the place to find out.
 
-## Agent authentication
+## Agent authentication + token exchange
 
 Everything above is about *your* identity. The "Authenticate Agent" button
-(next to the JWT field) is about a different one: the agent's own.
+(next to the JWT field) is about proving a second one — the agent's own —
+and then combining the two into a single delegated token. One click, two
+OAuth calls, both entirely server-side:
 
-This runs OAuth 2.0 **Client Credentials Grant** — a second, separate
-PingOne application (its own `client_id`/`client_secret`, configured via
-`AGENT_*` in `.env.local`) authenticates directly to the token endpoint with
-HTTP Basic auth and a `scope` of `agent`. No browser redirect, no user, no
-consent screen — the agent is simply proving its own identity, which is why
-the button says *authenticate*, not *authorize*: there's no resource owner
-in this flow to grant anything. Same reverse-proxy shape as everything
-else here — the request happens entirely server-side, and the resulting
-token lands in its own encrypted cookie, never the browser.
+**1. Client Credentials Grant.** A second, separate PingOne application
+(its own `client_id`/`client_secret`, configured via `AGENT_*` in
+`.env.local`) authenticates directly to the token endpoint with HTTP Basic
+auth and a `scope` of `agent`. No browser redirect, no user, no consent
+screen — the agent is simply proving its own identity, which is why the
+button says *authenticate*, not *authorize*: there's no resource owner here
+to grant anything. This produces the agent's own access token — the
+**actor_token** for the next step.
 
-This isn't just a second login for its own sake. It's the other half of the
-delegation pattern described above: AgentCore Identity's own on-behalf-of
-exchange works by combining a **subject_token** (the caller, i.e. your OIDC
-token) with an **actor_token** obtained via client credentials — exactly
-this token — to prove *both* "this real user" and "this specific agent" in
-one exchange. Right now the two tokens just exist side by side, each in
-their own cookie; wiring them together into an actual RFC 8693 exchange is
-the next step, not something this button does on its own yet.
+**2. RFC 8693 Token Exchange.** That actor_token, together with *your*
+signed-in OIDC access token as the **subject_token**, gets POSTed back to
+the same token endpoint with
+`grant_type=urn:ietf:params:oauth:grant-type:token-exchange` — exactly the
+delegation pattern [AgentCore Identity's own on-behalf-of exchange](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/on-behalf-of-token-exchange.html)
+uses internally, just performed here explicitly rather than by AWS. The
+result is one access token that carries *both* identities — the real user
+and this specific agent — which is exactly what AgentCore's authorizer
+needs to see. This step requires you to already be signed in; the button
+will tell you plainly if you're not, rather than failing partway through.
+
+Nothing about either step touches the browser beyond a plain
+`{ ok: true }` — same reverse-proxy shape as sign-in. Three cookies end up
+involved (your session, the agent's own token, the final exchanged one),
+each encrypted independently, and **the exchanged token is what actually
+gets sent to AgentCore** once it exists — it now takes priority over both
+your plain session token and a manually pasted JWT.
 
 ## Secret scanning
 
@@ -204,10 +214,11 @@ from the top bar; it persists across reloads.
 1. **`src/app/api/invoke/route.ts`** — receives `{ region, harnessArn,
    qualifier, sessionId, messages }` from the browser (plus `jwt`, only if
    you're not signed in), calls AgentCore's `InvokeHarness` endpoint with
-   the resolved bearer token — from your signed-in session if there is one,
-   otherwise the pasted JWT — and decodes the streamed event-stream binary
-   frames (`@smithy/eventstream-codec`) as they arrive, buffering only
-   enough bytes to complete one frame at a time, never the whole response.
+   the resolved bearer token — the exchanged token if one exists, else your
+   plain session token, else the pasted JWT — and decodes the streamed
+   event-stream binary frames (`@smithy/eventstream-codec`) as they arrive,
+   buffering only enough bytes to complete one frame at a time, never the
+   whole response.
 2. Each decoded frame is re-emitted to the browser as a hand-rolled
    server-sent event over the same connection (plain `EventSource` can't
    POST or set custom headers, so both ends parse SSE manually — see
@@ -220,6 +231,9 @@ from the top bar; it persists across reloads.
 4. Signing in instead of pasting a JWT runs through `/api/auth/login` →
    PingOne → `/api/auth/callback` first (see the OIDC section above), which
    ends with an encrypted cookie instead of a token landing in the browser.
+5. "Authenticate Agent" runs a second, independent identity through client
+   credentials, then exchanges it with your session token (RFC 8693) into
+   one delegated token — see the Agent authentication section above.
 
 Full architecture notes, AgentCore API gotchas (harness-vs-runtime ARNs,
 the `:event-type` header colon-prefix that silently breaks naive parsing,
