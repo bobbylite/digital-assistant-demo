@@ -434,6 +434,81 @@ span's attributes. Same "recreate the mock, don't trust a build alone"
 rule as the OIDC and agent-auth sections above — the script was temporary
 and deleted after use.
 
+## Docker
+
+`docker compose up --build` builds and runs the whole app. No `.env.local`
+required to start — the app already treats every env var as optional (see
+Environment variables below), and `docker-compose.yml`'s `env_file` entry
+for `.env.local` is marked `required: false` so a fresh clone with no env
+file still comes up, just in manual-JWT-paste mode, same as `npm run dev`
+would.
+
+**Files:**
+- `next.config.ts` — `output: "standalone"`. This is what makes the runner
+  stage below small: Next traces the actual production dependency subset
+  used by the build into `.next/standalone`, instead of shipping the full
+  `node_modules` tree (dev dependencies, unused transitive deps, all of
+  it). Without this, the runner stage would need a full `npm install`.
+- `Dockerfile` — three stages: `deps` (installs once, cached independently
+  of source changes so editing app code doesn't invalidate the `npm ci`
+  layer), `builder` (runs `next build` against the standalone output),
+  `runner` (the shipped image — just `.next/standalone`, `.next/static`,
+  and `public`, running as a non-root `nextjs` user on Alpine). No
+  build-time secrets: only the three non-secret `NEXT_PUBLIC_*` Connection-
+  panel defaults are accepted as build `ARG`s (Next inlines `NEXT_PUBLIC_*`
+  into the client bundle at build time, so they *have* to be build-time,
+  not runtime env — this is a Next.js constraint, not a choice made here).
+  Everything else (`OIDC_*`, `AGENT_*`, `SESSION_SECRET`) is read from
+  `process.env` by server-only code at request time and belongs at
+  *runtime* only — see `docker-compose.yml`'s `env_file`. Health check runs
+  `node -e "fetch(...)"` against `/api/health` rather than adding `curl`
+  or `wget` to the Alpine image — Node 18+ has `fetch` built in, so this
+  is one fewer package in the image for a check this simple.
+- `src/app/api/health/route.ts` — deliberately answers only "is the Next.js
+  process up and routing," not "is AgentCore/PingOne reachable." Don't add
+  a downstream call here; a health check that depends on a third party
+  turns their outage into this container's outage.
+- `docker-compose.yml` — `env_file: [{path: .env.local, required: false}]`
+  wires the same file `npm run dev` already reads straight into the
+  container at runtime, no separate Docker-specific env file to maintain.
+  Build `args` for the three `NEXT_PUBLIC_*` values default to the same
+  values `src/lib/env.ts` already falls back to (`us-east-2` / `DEFAULT` /
+  blank) via `${VAR:-default}` shell-style interpolation, pulled from your
+  shell env or Compose's own auto-loaded `.env` (a different file from
+  `.env.local` by Compose convention). To bake your actual `.env.local`
+  values into the build instead of leaving them as post-load UI edits, run
+  `docker compose --env-file .env.local up --build` — that flag is what
+  points Compose's variable-interpolation source at `.env.local` instead
+  of the default `.env`; the service's own `env_file:` entry (above)
+  handles the *runtime* container env either way and doesn't need it.
+- `.dockerignore` — excludes `.env*` except `.env.local.example`
+  (mirroring `.gitignore`'s own exception, see Environment variables
+  below), plus `node_modules`, `.next`, `.git`, and docs — keeps the build
+  context small and guarantees no local secret can accidentally end up
+  inside a build layer via a stray `COPY . .`.
+
+**Alpine's `adduser --system` doesn't set a user's primary group from a
+bare trailing group name** — `adduser --system --uid 1001 nextjs` silently
+leaves the new user in Alpine's default `nogroup` rather than the `nodejs`
+group created just before it, even though the `COPY --chown=nextjs:nodejs`
+lines assume that pairing. Harmless in practice here (the copied files are
+owned by `nextjs` directly, so owner-bit permissions cover it regardless of
+group), but it's not the intended permission model and defeats the point of
+creating a dedicated group at all. Fixed with the explicit `-G nodejs`
+flag (BusyBox `adduser` syntax, confirmed via `adduser --help` inside the
+`node:22-alpine` image itself rather than assumed from GNU `adduser`'s
+different flag names) — verified via `docker compose exec app id` showing
+`gid=1001(nodejs)` before trusting it, not just that the container started.
+
+**Tested for real, not just "the build didn't error":** `docker compose
+build` + `up -d`, then verified `docker compose ps` reports
+`(healthy)` (not just `Up`), `GET /api/health` and `GET /` both return 200,
+`docker compose exec app id` shows uid 1001 / gid 1001 (`nodejs`) — not
+root — and `GET /api/auth/session` returned `oidcEnabled: true` /
+`agentConfigured: true` against a real `.env.local`, proving the
+`env_file` wiring actually reaches server-only config at runtime and isn't
+just present in `docker-compose.yml` unused.
+
 ## Commands
 
 ```bash

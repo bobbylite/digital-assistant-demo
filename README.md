@@ -249,6 +249,27 @@ paste a JWT by hand every time. Open
 [http://localhost:3000](http://localhost:3000) and go. Toggle dark mode
 from the top bar; it persists across reloads.
 
+### Or run it in Docker
+
+```bash
+docker compose up --build
+```
+
+That's the whole thing — no `.env.local` required to start (manual
+JWT-paste mode works out of the box). If you have one, it's picked up
+automatically and the container comes up already signed-in-capable:
+
+```bash
+cp .env.local.example .env.local   # if you haven't already
+docker compose up --build
+```
+
+Open [http://localhost:3000](http://localhost:3000). `docker compose down`
+to stop it. See the Docker section in `CLAUDE.md` for what the image
+actually contains, how the three `NEXT_PUBLIC_*` Connection-panel defaults
+get baked in vs. everything else staying runtime-only, and the health
+check at `/api/health`.
+
 ## How it works
 
 1. **`src/app/api/invoke/route.ts`** — receives `{ region, harnessArn,

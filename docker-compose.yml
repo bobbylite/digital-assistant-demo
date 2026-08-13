@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Only affects the pre-filled Connection panel defaults (non-secret).
+        # Pulled from your shell env or a `.env` Compose auto-loads; falls
+        # back to these if neither is set — so `docker compose up --build`
+        # works with zero setup. To bake in your own .env.local's values
+        # instead, run `docker compose --env-file .env.local up --build`.
+        NEXT_PUBLIC_DEFAULT_REGION: ${NEXT_PUBLIC_DEFAULT_REGION:-us-east-2}
+        NEXT_PUBLIC_DEFAULT_QUALIFIER: ${NEXT_PUBLIC_DEFAULT_QUALIFIER:-DEFAULT}
+        NEXT_PUBLIC_DEFAULT_HARNESS_ARN: ${NEXT_PUBLIC_DEFAULT_HARNESS_ARN:-}
+    ports:
+      - "3000:3000"
+    # Optional and gitignored, same file `npm run dev` reads — see
+    # .env.local.example. Marked not required so the container still starts
+    # (in manual JWT-paste mode) if you haven't created one yet.
+    env_file:
+      - path: .env.local
+        required: false
+    restart: unless-stopped
