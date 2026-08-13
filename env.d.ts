@@ -13,5 +13,12 @@ declare namespace NodeJS {
     readonly OIDC_POST_LOGOUT_REDIRECT_URI?: string;
     readonly OIDC_SCOPES?: string;
     readonly SESSION_SECRET?: string;
+
+    // The agent's own machine identity (client credentials grant) —
+    // separate PingOne application from OIDC_CLIENT_ID above. Reuses
+    // OIDC_DISCOVERY_URL for the token endpoint.
+    readonly AGENT_CLIENT_ID?: string;
+    readonly AGENT_CLIENT_SECRET?: string;
+    readonly AGENT_SCOPE?: string;
   }
 }

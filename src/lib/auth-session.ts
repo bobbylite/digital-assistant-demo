@@ -11,9 +11,11 @@ import { EncryptJWT, jwtDecrypt, type JWTPayload } from "jose";
 
 const SESSION_COOKIE = "agentcore_session";
 const PENDING_COOKIE = "agentcore_oidc_pending";
+const AGENT_TOKEN_COOKIE = "agentcore_agent_token";
 
 const PENDING_MAX_AGE = 10 * 60; // minutes to complete the IdP redirect round trip
 const SESSION_MAX_AGE = 8 * 60 * 60; // hard cap regardless of the access token's own exp
+const AGENT_TOKEN_MAX_AGE = 60 * 60; // client-credentials tokens are typically short-lived; re-auth beats a stale cache
 
 function sessionKey(): Uint8Array {
   const secret = process.env.SESSION_SECRET;
@@ -110,4 +112,34 @@ export async function getUserSession(): Promise<UserSession | null> {
 export async function clearUserSession(): Promise<void> {
   const store = await cookies();
   store.delete(SESSION_COOKIE);
+}
+
+// Separate cookie from UserSession above — this is the *agent's* own
+// machine identity (client credentials grant), not a user's. Keeping them
+// apart mirrors the RFC 8693 exchange this is a building block for:
+// subject_token (user) and actor_token (agent) are two distinct tokens
+// combined later, not one replacing the other.
+export interface AgentTokenData {
+  accessToken: string;
+}
+
+export async function setAgentToken(data: AgentTokenData, expiresInSeconds?: number): Promise<void> {
+  const maxAge = Math.min(
+    expiresInSeconds && expiresInSeconds > 0 ? expiresInSeconds : AGENT_TOKEN_MAX_AGE,
+    AGENT_TOKEN_MAX_AGE
+  );
+  const store = await cookies();
+  store.set(AGENT_TOKEN_COOKIE, await seal(data, maxAge), cookieOptions(maxAge));
+}
+
+export async function getAgentToken(): Promise<AgentTokenData | null> {
+  const store = await cookies();
+  const raw = store.get(AGENT_TOKEN_COOKIE)?.value;
+  if (!raw) return null;
+  return unseal<AgentTokenData>(raw);
+}
+
+export async function clearAgentToken(): Promise<void> {
+  const store = await cookies();
+  store.delete(AGENT_TOKEN_COOKIE);
 }

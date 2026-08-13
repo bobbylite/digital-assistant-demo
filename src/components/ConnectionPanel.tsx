@@ -1,6 +1,7 @@
 "use client";
 
 import { Panel } from "./Panel";
+import { AgentAuthButton } from "./AgentAuthButton";
 
 interface ConnectionPanelProps {
   jwt: string;
@@ -12,6 +13,8 @@ interface ConnectionPanelProps {
   qualifier: string;
   onQualifierChange: (v: string) => void;
   signedIn: boolean;
+  agentConfigured: boolean;
+  agentAuthenticated: boolean;
 }
 
 const inputClass =
@@ -28,6 +31,8 @@ export function ConnectionPanel({
   qualifier,
   onQualifierChange,
   signedIn,
+  agentConfigured,
+  agentAuthenticated,
 }: ConnectionPanelProps) {
   return (
     <Panel title="Connection">
@@ -50,6 +55,7 @@ export function ConnectionPanel({
               className={`${inputClass} resize-none font-mono text-xs`}
             />
           )}
+          <AgentAuthButton configured={agentConfigured} initiallyAuthenticated={agentAuthenticated} />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>

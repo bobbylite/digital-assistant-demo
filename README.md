@@ -144,6 +144,30 @@ JWT verification — PKCE, state/nonce CSRF checks, and JWKS-based signature
 verification are exactly the kind of protocol logic that's easy to get
 subtly, quietly wrong by hand, and this isn't the place to find out.
 
+## Agent authentication
+
+Everything above is about *your* identity. The "Authenticate Agent" button
+(next to the JWT field) is about a different one: the agent's own.
+
+This runs OAuth 2.0 **Client Credentials Grant** — a second, separate
+PingOne application (its own `client_id`/`client_secret`, configured via
+`AGENT_*` in `.env.local`) authenticates directly to the token endpoint with
+HTTP Basic auth and a `scope` of `agent`. No browser redirect, no user, no
+consent screen — the agent is simply proving its own identity, which is why
+the button says *authenticate*, not *authorize*: there's no resource owner
+in this flow to grant anything. Same reverse-proxy shape as everything
+else here — the request happens entirely server-side, and the resulting
+token lands in its own encrypted cookie, never the browser.
+
+This isn't just a second login for its own sake. It's the other half of the
+delegation pattern described above: AgentCore Identity's own on-behalf-of
+exchange works by combining a **subject_token** (the caller, i.e. your OIDC
+token) with an **actor_token** obtained via client credentials — exactly
+this token — to prove *both* "this real user" and "this specific agent" in
+one exchange. Right now the two tokens just exist side by side, each in
+their own cookie; wiring them together into an actual RFC 8693 exchange is
+the next step, not something this button does on its own yet.
+
 ## Secret scanning
 
 Every push and pull request runs [Gitleaks](https://github.com/gitleaks/gitleaks)
@@ -206,13 +230,13 @@ live in `CLAUDE.md` — read that before making structural changes.
 
 Next.js has no separate config-file convention — it reads `.env.local` via
 `process.env`. Only `NEXT_PUBLIC_*`-prefixed vars reach the browser bundle;
-everything else (`OIDC_CLIENT_SECRET`, `SESSION_SECRET`, all of the `OIDC_*`
-config) is server-only by construction, read from separate modules
-(`src/lib/oidc.ts`, `src/lib/auth-session.ts`) that a client component
-can't import. See `.env.local.example` for the full list. The JWT is never
-one of them either way — pasted manually, it's typed into the UI at
-runtime; via OIDC, it never exists as an env var or a file, only inside the
-encrypted session cookie.
+everything else (`OIDC_CLIENT_SECRET`, `AGENT_CLIENT_SECRET`, `SESSION_SECRET`,
+all of the `OIDC_*`/`AGENT_*` config) is server-only by construction, read
+from separate modules (`src/lib/oidc.ts`, `src/lib/auth-session.ts`) that a
+client component can't import. See `.env.local.example` for the full list.
+The JWT is never one of them either way — pasted manually, it's typed into
+the UI at runtime; via OIDC or agent auth, the resulting token never exists
+as an env var or a file, only inside its own encrypted cookie.
 
 ## Development
 

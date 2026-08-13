@@ -44,7 +44,7 @@ export function AgentConsole() {
       setAuthSession(data);
     } catch {
       // Non-fatal — falls back to manual JWT paste mode.
-      setAuthSession({ oidcEnabled: false, authenticated: false });
+      setAuthSession({ oidcEnabled: false, authenticated: false, agentConfigured: false, agentAuthenticated: false });
     }
   }
 
@@ -246,6 +246,8 @@ export function AgentConsole() {
             qualifier={qualifier}
             onQualifierChange={setQualifier}
             signedIn={authSession?.authenticated ?? false}
+            agentConfigured={authSession?.agentConfigured ?? false}
+            agentAuthenticated={authSession?.agentAuthenticated ?? false}
           />
           <SessionPanel sessionId={sessionId} onNewSession={handleNewSession} />
           <MetricsPanel metrics={metrics} />

@@ -37,11 +37,14 @@ same-origin SSE the browser can read trivially.
   (hand-rolled SSE over a `ReadableStream`, not `EventSource` — `EventSource`
   can't do POST or custom headers, which is why the client parses this by
   hand too; see `AgentConsole.tsx`).
-- **`src/components/AgentConsole.tsx`** — the only stateful component. Owns
-  connection config, session id, conversation history, and the fetch +
-  manual SSE-parsing loop. Everything else in `src/components/` is
-  presentational (`ChatPanel`, `ConnectionPanel`, `SessionPanel`,
-  `MetricsPanel`, `EventConsole`, `TopBar`, `Panel`).
+- **`src/components/AgentConsole.tsx`** — the only stateful component that
+  matters for the chat/connection flow. Owns connection config, session id,
+  conversation history, and the fetch + manual SSE-parsing loop. Everything
+  else in `src/components/` is presentational (`ChatPanel`, `ConnectionPanel`,
+  `SessionPanel`, `MetricsPanel`, `EventConsole`, `TopBar`, `Panel`), except
+  `AgentAuthButton`, which owns its own small self-contained state machine
+  (idle/loading/success/error) — it doesn't need anything from `AgentConsole`
+  beyond two booleans, so it wasn't worth lifting.
 - **`src/lib/types.ts`** — shared `ChatMessage`/`ResponseMetrics`/`AuthSession`
   shapes, mirroring the AgentCore harness message format (`{ role, content: [{ text }] }`).
 - **`src/lib/session.ts`** — generates the AWS-required AgentCore session id.
@@ -174,6 +177,69 @@ caught, in case you hit them again:
   falsely look like a client_id mismatch. That's a mock-server bug, not an
   app bug, but it's easy to misread as the latter.
 
+## Agent authentication (client credentials)
+
+A second, independent identity: the *agent itself* authenticating to
+PingOne via OAuth 2.0 Client Credentials Grant — no user, no browser
+redirect, no consent screen, just the agent proving its own identity with
+`client_id`/`client_secret` directly at the token endpoint. This is a
+building block for a later RFC 8693 token exchange step (the agent's token
+as `actor_token`, the user's OIDC token as `subject_token` — mirrors AWS's
+own on-behalf-of pattern, see README) — **not currently wired into
+`/api/invoke`**. Don't assume this token does anything yet beyond exist in
+its own cookie; the exchange step is future work.
+
+**Files:**
+- `src/lib/oidc.ts` — `getAgentConfiguration()` does its own independent
+  `discovery()` call against `OIDC_DISCOVERY_URL` (same discovery doc as
+  user login, different client) rather than reusing `getOidcConfiguration()`'s
+  cached `Configuration` — deliberate, so agent auth doesn't require
+  `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET` (user login) to be configured, or
+  vice versa. Also pinned to `client_secret_basic`, same reasoning as the
+  user-login config.
+- `src/lib/auth-session.ts` — `AgentTokenData` seals into its own cookie
+  (`agentcore_agent_token`), separate from `agentcore_session`. Kept apart
+  on purpose: these are two distinct tokens (user identity vs. agent
+  identity) that get *combined* in the future exchange step, not one
+  replacing the other. Short max-age (1 hour) — client-credentials tokens
+  are meant to be re-minted often, not treated as a long-lived session.
+- `src/app/api/auth/agent-token/route.ts` — **POST that returns JSON, not a
+  redirect.** Unlike `/login`, Client Credentials Grant needs zero browser
+  interaction — it's a single back-channel call to the token endpoint. The
+  browser's `fetch` just gets `{ ok: true }` or `{ error: "..." }` back; the
+  token itself never appears in the response body, only inside the cookie
+  this sets server-side.
+- `src/components/AgentAuthButton.tsx` — client component, self-contained
+  (owns its own loading/success/error state, doesn't need session state
+  from a parent beyond the two booleans `configured` /
+  `initiallyAuthenticated`). Success replays a CSS animation
+  (`.animate-agent-ping-ring` + `.animate-agent-check-pop` in `globals.css`)
+  by bumping a `burstKey` state value used as the animated elements' `key` —
+  React won't restart a CSS animation on a DOM node whose props/key didn't
+  change, so re-clicking "authenticate" without that key bump would only
+  animate the *first* time.
+
+**Env:** `AGENT_CLIENT_ID`, `AGENT_CLIENT_SECRET`, `AGENT_SCOPE` (default
+`"agent"`). No separate discovery URL — reuses `OIDC_DISCOVERY_URL`.
+`isAgentConfigured()` also requires `SESSION_SECRET` (needed to seal the
+cookie) but deliberately does *not* require the `OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`
+pair.
+
+**Naming:** the button says "Authenticate," not "Authorize" — Client
+Credentials Grant is the agent proving its own identity (authentication);
+"authorize" implies a resource owner granting consent, which doesn't happen
+here (no user in the loop at all). Keep that distinction if you touch the
+copy.
+
+**Tested against a mock IdP** (extended the same one used for OIDC
+login/logout, with `grant_type=client_credentials` support and a second
+registered client of `kind: "agent"`) via `curl` with a cookie jar (`-c`/`-b`)
+rather than a browser — confirmed the cookie is set correctly, that
+`/api/auth/session`'s `agentAuthenticated` reflects it, that it works with
+*no* user session present (confirms independence), and that a wrong secret
+surfaces the real `invalid_client` detail rather than a generic error. Same
+"recreate the mock, don't trust a build alone" rule as the OIDC section above.
+
 ## Commands
 
 ```bash
@@ -212,11 +278,14 @@ client bundle; anything else is server-only. Since `AgentConsole.tsx` is a
 - `env.d.ts` — types `NodeJS.ProcessEnv` for all of the above (editor
   autocomplete only; doesn't enforce anything at runtime).
 
-Only the connection *defaults* (region, qualifier, harness ARN) and the
-OIDC client config are env-driven. The JWT itself is never env-sourced when
-pasted manually; when signed in via OIDC, the resulting access token lives
-only inside the encrypted session cookie (see the OIDC section above), never
-server-side storage and never a plaintext value the browser can read.
+Only the connection *defaults* (region, qualifier, harness ARN), the OIDC
+client config, and the agent's client-credentials config (`AGENT_*`) are
+env-driven. The JWT itself is never env-sourced when pasted manually; when
+signed in via OIDC, the resulting access token lives only inside the
+encrypted session cookie (see the OIDC section above), never server-side
+storage and never a plaintext value the browser can read. Same for the
+agent's own token (see Agent authentication above) — separate cookie, same
+rule.
 
 ## Markdown rendering
 

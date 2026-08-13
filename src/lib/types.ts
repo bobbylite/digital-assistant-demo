@@ -30,4 +30,6 @@ export interface AuthSession {
   sub?: string;
   name?: string;
   email?: string;
+  agentConfigured: boolean;
+  agentAuthenticated: boolean;
 }

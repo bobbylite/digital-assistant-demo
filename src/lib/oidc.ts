@@ -40,11 +40,23 @@ export function getOidcEnv() {
   };
 }
 
+// openid-client refuses plain HTTP to the IdP by default — a good default
+// we do not want to weaken in production. The `execute` escape hatch this
+// produces exists only so a local mock/dev IdP served over http:// (e.g. in
+// tests) works; it's never reached for a real https:// deployment talking
+// to PingOne, and never applies in production regardless.
+function insecureDiscoveryOptions(discoveryUrl: URL): client.DiscoveryRequestOptions | undefined {
+  return process.env.NODE_ENV !== "production" && discoveryUrl.protocol === "http:"
+    ? { execute: [client.allowInsecureRequests] }
+    : undefined;
+}
+
 let configPromise: Promise<client.Configuration> | null = null;
 
 /**
  * Discovers the IdP's authorization/token/jwks endpoints from
- * OIDC_DISCOVERY_URL and returns a cached openid-client Configuration.
+ * OIDC_DISCOVERY_URL and returns a cached openid-client Configuration for
+ * the user-login client (OIDC_CLIENT_ID).
  *
  * We pass the full discovery-document URL rather than a bare issuer URL,
  * matching how OIDC_DISCOVERY_URL is documented — openid-client treats this
@@ -65,23 +77,56 @@ export function getOidcConfiguration(): Promise<client.Configuration> {
   if (!configPromise) {
     const env = getOidcEnv();
     const discoveryUrl = new URL(env.discoveryUrl);
-
-    // openid-client refuses plain HTTP to the IdP by default — a good
-    // default we do not want to weaken in production. The `execute` escape
-    // hatch below exists only so a local mock/dev IdP served over http://
-    // (e.g. in tests) works; it's never reached for a real https:// deployment
-    // talking to PingOne, and never applies in production regardless.
-    const options: client.DiscoveryRequestOptions | undefined =
-      process.env.NODE_ENV !== "production" && discoveryUrl.protocol === "http:"
-        ? { execute: [client.allowInsecureRequests] }
-        : undefined;
-
     configPromise = client
-      .discovery(discoveryUrl, env.clientId, undefined, client.ClientSecretBasic(env.clientSecret), options)
+      .discovery(discoveryUrl, env.clientId, undefined, client.ClientSecretBasic(env.clientSecret), insecureDiscoveryOptions(discoveryUrl))
       .catch((err) => {
         configPromise = null; // don't cache a failed discovery — allow retry on next request
         throw err;
       });
   }
   return configPromise;
+}
+
+/**
+ * The agent's own machine identity — a separate PingOne application from
+ * the user-login one above, authenticating itself via OAuth 2.0 Client
+ * Credentials Grant (no user, no browser redirect, no consent screen: the
+ * agent proves who *it* is directly to the token endpoint). Deliberately
+ * independent of OIDC_CLIENT_ID/OIDC_CLIENT_SECRET — an agent identity
+ * shouldn't require user-login to be configured, or vice versa — so this
+ * does its own discovery() call against the same OIDC_DISCOVERY_URL rather
+ * than reusing getOidcConfiguration()'s cached Configuration.
+ *
+ * This token is not wired into /api/invoke yet. It's a building block for a
+ * later RFC 8693 token exchange step (combining the user's token as
+ * subject_token with this one as actor_token — see AWS's own on-behalf-of
+ * pattern, README) — not a replacement for the user session.
+ */
+export function isAgentConfigured(): boolean {
+  return Boolean(process.env.AGENT_CLIENT_ID && process.env.AGENT_CLIENT_SECRET && process.env.OIDC_DISCOVERY_URL && process.env.SESSION_SECRET);
+}
+
+export function getAgentEnv() {
+  return {
+    clientId: required("AGENT_CLIENT_ID"),
+    clientSecret: required("AGENT_CLIENT_SECRET"),
+    discoveryUrl: required("OIDC_DISCOVERY_URL"),
+    scope: process.env.AGENT_SCOPE?.trim() || "agent",
+  };
+}
+
+let agentConfigPromise: Promise<client.Configuration> | null = null;
+
+export function getAgentConfiguration(): Promise<client.Configuration> {
+  if (!agentConfigPromise) {
+    const env = getAgentEnv();
+    const discoveryUrl = new URL(env.discoveryUrl);
+    agentConfigPromise = client
+      .discovery(discoveryUrl, env.clientId, undefined, client.ClientSecretBasic(env.clientSecret), insecureDiscoveryOptions(discoveryUrl))
+      .catch((err) => {
+        agentConfigPromise = null;
+        throw err;
+      });
+  }
+  return agentConfigPromise;
 }
