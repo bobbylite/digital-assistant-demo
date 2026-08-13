@@ -1,6 +1,7 @@
 import * as client from "openid-client";
 import { getOidcConfiguration, getOidcEnv, isOidcConfigured } from "@/lib/oidc";
 import { clearUserSession, clearPendingLogin, getUserSession } from "@/lib/auth-session";
+import { withSpan } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
 
@@ -24,25 +25,41 @@ export async function GET(request: Request) {
   if (!isOidcConfigured() || !session?.idToken) {
     return Response.redirect(home.toString(), 302);
   }
+  // Narrowed to a local const: TypeScript can't carry the `session.idToken`
+  // truthiness check above into the closure below (property narrowing
+  // doesn't survive a closure boundary), but a locally-bound const does.
+  const idToken = session.idToken;
 
   try {
-    const config = await getOidcConfiguration();
-    if (!config.serverMetadata().end_session_endpoint) {
-      // IdP doesn't advertise RP-Initiated Logout support — local logout
-      // above is all we can do.
-      return Response.redirect(home.toString(), 302);
-    }
+    const endSessionUrl = await withSpan(
+      "oidc.logout",
+      { "identity.sub": session.sub },
+      async (span) => {
+        const config = await getOidcConfiguration();
+        if (!config.serverMetadata().end_session_endpoint) {
+          // IdP doesn't advertise RP-Initiated Logout support — not an
+          // error, just nothing more to do; note it on the span and let the
+          // route fall back to local-only logout below.
+          span.setAttribute("logout.rp_initiated", false);
+          return null;
+        }
 
-    const env = getOidcEnv();
-    const endSessionUrl = client.buildEndSessionUrl(config, {
-      id_token_hint: session.idToken,
-      post_logout_redirect_uri: env.postLogoutRedirectUri,
-    });
-    return Response.redirect(endSessionUrl.toString(), 302);
+        const env = getOidcEnv();
+        span.setAttribute("logout.rp_initiated", true);
+        return client.buildEndSessionUrl(config, {
+          id_token_hint: idToken,
+          post_logout_redirect_uri: env.postLogoutRedirectUri,
+        });
+      }
+    );
+
+    return Response.redirect((endSessionUrl ?? home).toString(), 302);
   } catch (err) {
     // Most likely cause: post_logout_redirect_uri isn't registered as a
     // "Sign Off URL" on the PingOne application. Local session is already
-    // cleared above regardless, so fail soft rather than stranding the user.
+    // cleared above regardless, so fail soft rather than stranding the user
+    // — the span this threw from is still recorded as an ERROR for the
+    // audit trail even though the user experience stays graceful.
     console.error("RP-initiated logout failed, local session was still cleared:", err instanceof Error ? err.message : err);
     return Response.redirect(home.toString(), 302);
   }

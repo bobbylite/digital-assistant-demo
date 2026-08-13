@@ -15,6 +15,8 @@ interface ConnectionPanelProps {
   signedIn: boolean;
   agentConfigured: boolean;
   agentAuthenticated: boolean;
+  sessionId: string;
+  onNewSession: () => void;
 }
 
 const inputClass =
@@ -33,6 +35,8 @@ export function ConnectionPanel({
   signedIn,
   agentConfigured,
   agentAuthenticated,
+  sessionId,
+  onNewSession,
 }: ConnectionPanelProps) {
   return (
     <Panel title="Connection">
@@ -92,6 +96,26 @@ export function ConnectionPanel({
             placeholder="arn:aws:bedrock-agentcore:..."
             className={`${inputClass} font-mono text-xs`}
           />
+        </div>
+        <div>
+          <label className={labelClass} htmlFor="sessionId">
+            Session ID
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="sessionId"
+              readOnly
+              value={sessionId}
+              className={`${inputClass} font-mono text-xs text-ink-muted`}
+            />
+            <button
+              type="button"
+              onClick={onNewSession}
+              className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-ink transition hover:border-brand hover:text-brand"
+            >
+              New
+            </button>
+          </div>
         </div>
       </div>
     </Panel>

@@ -17,13 +17,6 @@ export interface InvokeRequestBody {
   messages: ChatMessage[];
 }
 
-export interface ResponseMetrics {
-  latencyMs?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-}
-
 export interface AuthSession {
   oidcEnabled: boolean;
   authenticated: boolean;
@@ -32,4 +25,19 @@ export interface AuthSession {
   email?: string;
   agentConfigured: boolean;
   agentAuthenticated: boolean;
+}
+
+// A redacted view of a real OpenTelemetry span — see src/lib/telemetry.ts
+// for how these get created and why nothing token-shaped can end up in
+// `attributes`. Shared here (not defined in telemetry.ts) because this
+// shape needs to be safe to import from client components.
+export interface RecordedSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  startTimeMs: number;
+  status: "OK" | "ERROR" | "UNSET";
+  statusMessage?: string;
+  attributes: Record<string, string | number | boolean>;
 }

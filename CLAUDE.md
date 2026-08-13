@@ -40,12 +40,13 @@ same-origin SSE the browser can read trivially.
 - **`src/components/AgentConsole.tsx`** — the only stateful component that
   matters for the chat/connection flow. Owns connection config, session id,
   conversation history, and the fetch + manual SSE-parsing loop. Everything
-  else in `src/components/` is presentational (`ChatPanel`, `ConnectionPanel`,
-  `SessionPanel`, `MetricsPanel`, `EventConsole`, `TopBar`, `Panel`), except
+  else in `src/components/` is presentational (`ChatPanel`, `ConnectionPanel`
+  — which also owns the session-id field/regenerate control, see below —
+  `TelemetryPanel`, `EventConsole`, `TopBar`, `Panel`), except
   `AgentAuthButton`, which owns its own small self-contained state machine
   (idle/loading/success/error) — it doesn't need anything from `AgentConsole`
   beyond two booleans, so it wasn't worth lifting.
-- **`src/lib/types.ts`** — shared `ChatMessage`/`ResponseMetrics`/`AuthSession`
+- **`src/lib/types.ts`** — shared `ChatMessage`/`AuthSession`/`RecordedSpan`
   shapes, mirroring the AgentCore harness message format (`{ role, content: [{ text }] }`).
 - **`src/lib/session.ts`** — generates the AWS-required AgentCore session id.
   Not to be confused with `src/lib/auth-session.ts` (the OIDC login session) —
@@ -285,6 +286,153 @@ all) and confirming the request still reached real AWS (got a real
 `"Invalid harness ARN format"` response back, not the "no bearer token"
 401) rather than trusting that it merely avoided an error. Same
 "recreate the mock, don't trust a build alone" rule as the OIDC section above.
+
+## OpenTelemetry
+
+Every identity/token operation in this app — OIDC login/callback/logout, the
+agent's client_credentials grant, the RFC 8693 token exchange, and the
+`/api/invoke` call to AgentCore — is wrapped in a real OpenTelemetry span
+(`@opentelemetry/api` + `@opentelemetry/sdk-trace-node`), not a
+fake/simulated timeline built from ad-hoc timestamps. This was added
+deliberately scoped to **identity, audit, and token usage**, not
+performance/latency — the panel shows a timestamp per span but no
+duration, and nothing here is meant to answer "how slow was this."
+
+**Files:**
+- `src/lib/telemetry.ts` — server-only. `initTelemetry()` registers a
+  `NodeTracerProvider` with one custom `SpanProcessor`
+  (`RecordingSpanProcessor`) that keeps the last `MAX_SPANS` (300) spans in
+  an in-memory ring buffer and mirrors each one as a compact one-line
+  console log. `withSpan(name, attributes, fn)` is what most routes use —
+  wraps `tracer.startActiveSpan`, sets attributes up front, auto-records
+  `OK`/`ERROR` status (via `recordException` on throw) and always ends the
+  span, even on error. `TRACER_NAME` is exported so any route creating a
+  manual span (see `/api/invoke` below) tags it consistently.
+- `src/instrumentation.ts` — Next.js's own convention: `register()` runs
+  once at server startup, before any request is handled, and calls
+  `initTelemetry()`. **Must live inside `src/`**, not the project root, for
+  a project using a `src/` layout — Next silently ignores it at the wrong
+  path with no error, which is exactly what happened building this the
+  first time. Gated on `process.env.NEXT_RUNTIME === "nodejs"` since this
+  file also runs (harmlessly, but pointlessly) in the Edge runtime.
+- `src/app/api/telemetry/spans/route.ts` — `GET` returns `{ spans }`
+  (newest first) for the panel to poll; `DELETE` clears the buffer (wired
+  to the panel's "Clear" button).
+- `src/components/TelemetryPanel.tsx` — polls `GET /api/telemetry/spans`
+  every 2.5s, groups spans by `traceId` (root span first, children
+  indented under it via `parentSpanId`), and renders each with a status
+  dot, a human label, its timestamp, and attribute chips — token-usage
+  attributes (`token.input`/`token.output`/`token.total`) get distinct
+  styling from identity (`identity.*`) and AWS (`aws.*`) attributes, plus
+  a monospace trace/span ID footer for anyone who wants to correlate with
+  the console output.
+- `src/lib/types.ts` — `RecordedSpan` (the redacted, client-safe shape a
+  span gets flattened to) lives here rather than in `telemetry.ts` so
+  `TelemetryPanel.tsx` (a client component) can import the type without
+  pulling in server-only OTel SDK code.
+
+**No OTLP exporter is configured** — there's no collector to point one at
+by default, so spans never leave the process; the in-memory buffer and
+console mirror are the only sinks. If you want these to actually leave the
+process (Honeycomb, Jaeger, an OTel Collector, etc.), add
+`@opentelemetry/exporter-trace-otlp-http`, construct a `BatchSpanProcessor`
+wrapping it, and add it to the `spanProcessors` array passed to
+`NodeTracerProvider` in `initTelemetry()` — `RecordingSpanProcessor` can
+keep running alongside it unchanged, since a `TracerProvider` fans the same
+spans out to every processor in the array.
+
+**Spans, by route:**
+- `oidc.login.redirect` (`/api/auth/login`) — `identity.client_id`,
+  `identity.scope`.
+- `oidc.login.callback` (`/api/auth/callback`) — `identity.sub`,
+  `token.expires_in_s`. Every failure branch (`expired_login`,
+  `discovery_failed`, `incomplete_response`, `exchange_failed`) throws a
+  local `CallbackError(code, message, detail)` so `withSpan` records it as
+  an `ERROR` span automatically; an outer try/catch converts it back into
+  the existing redirect-with-`auth_error`-query-param response, so span
+  instrumentation didn't change any user-visible error behavior.
+- `oidc.logout` (`/api/auth/logout`) — `identity.sub`,
+  `logout.rp_initiated` (`true` only when the IdP actually advertises
+  `end_session_endpoint` and the redirect happens).
+- `agent.authenticate` (`/api/auth/agent-token`) — the outer span for the
+  whole two-step flow, parenting two child spans (automatic, via
+  `tracer.startActiveSpan`'s context propagation — no manual span-context
+  plumbing needed):
+  - `agent.client_credentials` — `identity.client_id`, `identity.scope`.
+  - `agent.token_exchange` — `identity.subject_sub`,
+    `identity.actor_client_id`, `identity.scope`, `token.requested_type`.
+  Same pattern as the callback route: a local `AgentAuthError(message,
+  status)` preserves the exact HTTP status this route already returned
+  per failure case, while still getting automatic `ERROR` span recording.
+- `agentcore.invoke` (`/api/invoke`) — `aws.region`, `aws.harness_arn`,
+  `aws.qualifier`, `identity.token_source` (`exchanged`/`session`/`manual`
+  — which credential actually served the call), `identity.sub` when
+  known, and, once AgentCore's `metadata` stream event arrives,
+  `token.input`/`token.output`/`token.total`. **This is the one route that
+  uses `tracer.startSpan()` directly instead of `withSpan()`** — the span
+  has to stay open across the entire SSE streaming lifecycle, which
+  continues well after the route handler returns its `Response` object, so
+  `withSpan`'s "await the function, then end the span" shape doesn't fit.
+  Ended exactly once via a small idempotent `endSpan()` helper, from
+  whichever of three places finishes first: the stream completing
+  normally, a stream error, or the client disconnecting (the `cancel()`
+  callback on the `ReadableStream`).
+
+**Redaction is defense-in-depth, not a single check.** `withSpan`'s
+`attributes` parameter is a plain object callers build explicitly — there's
+no code path that dumps a request/response body onto a span, so nothing
+token-shaped should ever reach one. `RecordingSpanProcessor.onEnd()` adds a
+second, independent gate on top of that: any attribute key matching
+`SUSPICIOUS_KEY_PATTERN` (`/token|secret|password|authoriz/i`) is dropped
+before it's stored or logged, so even a future edit that sets an attribute
+some other way can't leak a credential through this path. Identity *claims*
+(`sub`, `client_id`, `scope`) are fine to record; the credentials that
+carried them are not — same rule as everywhere else in this app.
+
+**Next.js's own OpenTelemetry auto-instrumentation is on by default once
+you register a global `TracerProvider`.** Framework-internal spans (e.g.
+"resolve page components") started flowing into the same processor,
+tagged with `instrumentationScope.name === "next.js"` instead of this
+app's `TRACER_NAME` — flooded the console (56.9KB from just startup + one
+page load) and would have flooded the in-memory buffer, burying the
+spans this panel actually cares about. Fixed by filtering on
+`span.instrumentationScope.name !== TRACER_NAME` as the very first line of
+`onEnd()`. If spans stop showing up after touching this file, check that
+filter hasn't been loosened or removed.
+
+**Next.js/Turbopack dev-mode module-instance isolation bit this once,
+learned the hard way:** `instrumentation.ts` (which dynamically
+`import()`s `telemetry.ts` to call `initTelemetry()`) and the various
+route handlers (which statically `import` the same module) can resolve to
+*separate compiled instances* of `telemetry.ts` under Turbopack dev mode.
+A plain module-level `const recentSpans: RecordedSpan[] = []` silently
+became two independent arrays — `RecordingSpanProcessor.onEnd()` was
+correctly pushing spans (confirmed via the console mirror), but
+`GET /api/telemetry/spans` read from a *different* empty array and always
+returned `{ spans: [] }`. `@opentelemetry/api`'s own cross-module tracer
+registry doesn't have this problem (it's backed by `globalThis`
+internally), which is why span *creation* worked fine while the buffer
+*read-back* silently didn't. Fixed the same way this codebase already
+fixes this exact class of bug for a Prisma client singleton: the buffer is
+now `globalThis.__agentcoreRecentSpans`, accessed only through a
+`spanStore()` helper, never a bare module-level variable. If you add
+another piece of shared mutable state to a server-only module, default to
+the `globalThis` pattern rather than a plain module-level variable, or
+re-learn this the hard way too.
+
+**Tested against the same mock IdP used for OIDC/agent-auth testing**
+(extended with `client_credentials` and
+`urn:ietf:params:oauth:grant-type:token-exchange` grant support), driven
+by a small script doing a full login → `/api/auth/agent-token` → 
+`GET /api/telemetry/spans` round trip and asserting: all five expected
+span names are present, no Next.js-internal spans leaked through,
+`agent.client_credentials`/`agent.token_exchange` are both children of
+`agent.authenticate` and share its `traceId`, identity attributes
+(`identity.sub`, `identity.actor_client_id`) are present, and no
+JWT-shaped value (`/eyJ[A-Za-z0-9_-]{10,}/`) appears anywhere in any
+span's attributes. Same "recreate the mock, don't trust a build alone"
+rule as the OIDC and agent-auth sections above — the script was temporary
+and deleted after use.
 
 ## Commands
 

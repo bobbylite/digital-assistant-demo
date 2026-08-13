@@ -4,12 +4,11 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { TopBar, type Status } from "./TopBar";
 import { ChatPanel } from "./ChatPanel";
 import { ConnectionPanel } from "./ConnectionPanel";
-import { SessionPanel } from "./SessionPanel";
-import { MetricsPanel } from "./MetricsPanel";
+import { TelemetryPanel } from "./TelemetryPanel";
 import { EventConsole, type StreamEvent } from "./EventConsole";
 import { generateSessionId } from "@/lib/session";
 import { DEFAULT_REGION, DEFAULT_QUALIFIER, DEFAULT_HARNESS_ARN } from "@/lib/env";
-import type { AuthSession, ChatMessage, ResponseMetrics } from "@/lib/types";
+import type { AuthSession, ChatMessage } from "@/lib/types";
 
 const STORAGE_KEY = "agentcore-console-connection";
 
@@ -30,7 +29,6 @@ export function AgentConsole() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<Status>("idle");
-  const [metrics, setMetrics] = useState<ResponseMetrics>({});
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -98,7 +96,6 @@ export function AgentConsole() {
   function handleNewSession() {
     setSessionId(generateSessionId());
     setMessages([]);
-    setMetrics({});
     setEvents([]);
     setError(null);
     setStatus("idle");
@@ -135,14 +132,10 @@ export function AgentConsole() {
       if (text && assistantIndexRef.current !== null) {
         applyDelta(assistantIndexRef.current, text);
       }
-    } else if (type === "metadata") {
-      const meta = payload as { metrics?: { latencyMs?: number }; usage?: ResponseMetrics };
-      setMetrics({
-        latencyMs: meta.metrics?.latencyMs,
-        inputTokens: meta.usage?.inputTokens,
-        outputTokens: meta.usage?.outputTokens,
-        totalTokens: meta.usage?.totalTokens,
-      });
+      // "metadata" (token usage) is still logged above via logEvent — it's
+      // just not tracked in separate client state anymore. The server-side
+      // span for this call already recorded it (token.input/output/total on
+      // the agentcore.invoke span); see the OpenTelemetry panel.
     } else if (type === "agent-error" || type === "stream-error") {
       const msg = (payload as { message?: string })?.message || "The agent runtime returned an error.";
       setError(msg);
@@ -248,9 +241,10 @@ export function AgentConsole() {
             signedIn={authSession?.authenticated ?? false}
             agentConfigured={authSession?.agentConfigured ?? false}
             agentAuthenticated={authSession?.agentAuthenticated ?? false}
+            sessionId={sessionId}
+            onNewSession={handleNewSession}
           />
-          <SessionPanel sessionId={sessionId} onNewSession={handleNewSession} />
-          <MetricsPanel metrics={metrics} />
+          <TelemetryPanel className="min-h-[160px] flex-1" />
           <EventConsole events={events} onClear={() => setEvents([])} className="min-h-[130px] flex-1" />
         </aside>
       </main>

@@ -9,6 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "@smithy/eventstream-codec": "^4.5.0",
     "@smithy/util-utf8": "^4.5.0",
     "jose": "^6.2.8",

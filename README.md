@@ -178,6 +178,46 @@ each encrypted independently, and **the exchanged token is what actually
 gets sent to AgentCore** once it exists — it now takes priority over both
 your plain session token and a manually pasted JWT.
 
+## Live OpenTelemetry — tokens, identity, audit
+
+Every identity-bearing call this console makes — sign-in, sign-out, the
+agent proving its own identity, the RFC 8693 exchange, and the call to
+AgentCore itself — is wrapped in a real [OpenTelemetry](https://opentelemetry.io/)
+span, visible live in the sidebar. This isn't a simulated activity feed;
+it's actual instrumentation (`@opentelemetry/api` +
+`@opentelemetry/sdk-trace-node`) that happens to keep its spans in memory
+rather than shipping them to a collector, because there isn't one
+configured by default.
+
+Deliberately **not** a latency dashboard — nothing here measures how fast a
+call was. It's built around the three things that actually matter for an
+agent identity system:
+
+- **Tokens.** Once AgentCore reports usage on the streamed response, input/
+  output/total token counts land directly on the `agentcore.invoke` span —
+  the same numbers a "last response metrics" panel would have shown, just
+  attached to the call that produced them instead of floating separately.
+- **Identity.** Every span that involves a credential records *whose* —
+  the signed-in user's `sub`, the agent's own `client_id`, which of
+  exchanged/session/manual token actually served a given call to AgentCore.
+- **Audit.** A grouped, timestamped, success/fail trace of what happened:
+  sign-in redirect → callback, the agent's client_credentials grant nested
+  under its token exchange (real parent/child spans, not just a flat list),
+  and the eventual AgentCore call — each one clearly marked `OK` or
+  `ERROR`, with the failure reason attached when it isn't `OK`.
+
+What never appears on a span: the token itself, or anything shaped like
+one. Attributes are an explicit allowlist set by each route (`identity.sub`,
+`identity.client_id`, `token.input`, `aws.region`, and so on) — never a
+dump of request/response data — and a second, independent filter drops any
+attribute whose *key* even looks like it might hold a secret
+(`token`/`secret`/`password`/`authoriz`, case-insensitive) before it's
+stored or logged, in case a future change ever tries to set one directly.
+
+No OTLP exporter is wired up out of the box — there's nowhere to point one
+by default — so none of this leaves your machine. See the OpenTelemetry
+section in `CLAUDE.md` if you want to point it at a real collector.
+
 ## Secret scanning
 
 Every push and pull request runs [Gitleaks](https://github.com/gitleaks/gitleaks)
