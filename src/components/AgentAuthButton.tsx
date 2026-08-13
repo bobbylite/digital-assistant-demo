@@ -51,7 +51,7 @@ export function AgentAuthButton({ configured, initiallyAuthenticated }: AgentAut
         }`}
       >
         {isSuccess && (
-          <span key={burstKey} aria-hidden className="pointer-events-none absolute inset-0">
+          <span key={`ring-${burstKey}`} aria-hidden className="pointer-events-none absolute inset-0">
             <span className="absolute inset-0 rounded-lg border-2 border-success animate-agent-ping-ring" />
             <span
               className="absolute inset-0 rounded-lg border-2 border-success animate-agent-ping-ring"
@@ -69,7 +69,7 @@ export function AgentAuthButton({ configured, initiallyAuthenticated }: AgentAut
             Authenticating…
           </>
         ) : isSuccess ? (
-          <span key={burstKey} className="flex items-center gap-1.5 animate-agent-check-pop">
+          <span key={`check-${burstKey}`} className="flex items-center gap-1.5 animate-agent-check-pop">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M3 8.5 6.5 12 13 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>

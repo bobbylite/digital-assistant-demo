@@ -29,6 +29,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="en"
       className={`${montserrat.variable} ${geistMono.variable} h-full antialiased`}
+      // THEME_INIT_SCRIPT below sets data-theme on this element before
+      // hydration runs (that's the whole point — avoids a flash of the
+      // wrong theme). React then sees a live DOM attribute the server
+      // never rendered and flags it as a mismatch; suppressHydrationWarning
+      // is the documented escape hatch for exactly this case — it only
+      // silences the warning for this element's own attributes, not the
+      // subtree, so it won't hide a real mismatch anywhere else.
+      suppressHydrationWarning
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
