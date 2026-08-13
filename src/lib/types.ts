@@ -6,7 +6,10 @@ export interface ChatMessage {
 }
 
 export interface InvokeRequestBody {
-  jwt: string;
+  // Optional: omitted when the browser has a signed-in OIDC session — the
+  // route handler uses the session cookie's access token instead. Required
+  // when there's no session (manual-paste mode).
+  jwt?: string;
   region: string;
   harnessArn: string;
   qualifier?: string;
@@ -19,4 +22,12 @@ export interface ResponseMetrics {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+}
+
+export interface AuthSession {
+  oidcEnabled: boolean;
+  authenticated: boolean;
+  sub?: string;
+  name?: string;
+  email?: string;
 }

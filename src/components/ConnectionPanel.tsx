@@ -11,6 +11,7 @@ interface ConnectionPanelProps {
   onHarnessArnChange: (v: string) => void;
   qualifier: string;
   onQualifierChange: (v: string) => void;
+  signedIn: boolean;
 }
 
 const inputClass =
@@ -26,6 +27,7 @@ export function ConnectionPanel({
   onHarnessArnChange,
   qualifier,
   onQualifierChange,
+  signedIn,
 }: ConnectionPanelProps) {
   return (
     <Panel title="Connection">
@@ -34,14 +36,20 @@ export function ConnectionPanel({
           <label className={labelClass} htmlFor="jwt">
             Bearer JWT
           </label>
-          <textarea
-            id="jwt"
-            value={jwt}
-            onChange={(e) => onJwtChange(e.target.value)}
-            placeholder="eyJhbGciOi..."
-            rows={2}
-            className={`${inputClass} resize-none font-mono text-xs`}
-          />
+          {signedIn ? (
+            <p className="rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-xs text-ink-muted">
+              Using your signed-in session — this field is ignored while signed in.
+            </p>
+          ) : (
+            <textarea
+              id="jwt"
+              value={jwt}
+              onChange={(e) => onJwtChange(e.target.value)}
+              placeholder="eyJhbGciOi..."
+              rows={2}
+              className={`${inputClass} resize-none font-mono text-xs`}
+            />
+          )}
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>

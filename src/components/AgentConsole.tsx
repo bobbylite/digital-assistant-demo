@@ -9,9 +9,17 @@ import { MetricsPanel } from "./MetricsPanel";
 import { EventConsole, type StreamEvent } from "./EventConsole";
 import { generateSessionId } from "@/lib/session";
 import { DEFAULT_REGION, DEFAULT_QUALIFIER, DEFAULT_HARNESS_ARN } from "@/lib/env";
-import type { ChatMessage, ResponseMetrics } from "@/lib/types";
+import type { AuthSession, ChatMessage, ResponseMetrics } from "@/lib/types";
 
 const STORAGE_KEY = "agentcore-console-connection";
+
+const AUTH_ERROR_COPY: Record<string, string> = {
+  not_configured: "OIDC is not configured on this server.",
+  expired_login: "Sign-in expired or was already used — try signing in again.",
+  discovery_failed: "Couldn't reach the identity provider's discovery endpoint.",
+  incomplete_response: "The identity provider's response was missing required fields.",
+  exchange_failed: "Token exchange with the identity provider failed.",
+};
 
 export function AgentConsole() {
   const [jwt, setJwt] = useState("");
@@ -25,8 +33,20 @@ export function AgentConsole() {
   const [metrics, setMetrics] = useState<ResponseMetrics>({});
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
 
   const assistantIndexRef = useRef<number | null>(null);
+
+  async function refreshAuthSession() {
+    try {
+      const res = await fetch("/api/auth/session");
+      const data: AuthSession = await res.json();
+      setAuthSession(data);
+    } catch {
+      // Non-fatal — falls back to manual JWT paste mode.
+      setAuthSession({ oidcEnabled: false, authenticated: false });
+    }
+  }
 
   useEffect(() => {
     // Generated client-side only: a random UUID here would mismatch between
@@ -44,6 +64,19 @@ export function AgentConsole() {
       }
     } catch {
       // ignore malformed/unavailable storage
+    }
+
+    refreshAuthSession();
+
+    // Surface a redirect-back error from /api/auth/callback, then scrub it
+    // from the URL so a reload doesn't re-show it.
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get("auth_error");
+    if (authError) {
+      const detail = params.get("auth_error_detail");
+      const summary = AUTH_ERROR_COPY[authError] ?? "Sign-in failed.";
+      setError(detail ? `${summary} (${detail})` : summary);
+      window.history.replaceState(null, "", window.location.pathname);
     }
   }, []);
 
@@ -122,8 +155,13 @@ export function AgentConsole() {
     const trimmed = prompt.trim();
     if (!trimmed || status === "connecting" || status === "streaming") return;
 
-    if (!jwt.trim() || !harnessArn.trim() || !region.trim()) {
-      setError("JWT, region, and harness ARN are all required.");
+    const signedIn = authSession?.authenticated ?? false;
+    if ((!signedIn && !jwt.trim()) || !harnessArn.trim() || !region.trim()) {
+      setError(
+        signedIn
+          ? "Region and harness ARN are required."
+          : "Sign in, or paste a JWT, plus region and harness ARN, are required."
+      );
       return;
     }
 
@@ -187,7 +225,7 @@ export function AgentConsole() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      <TopBar status={status} />
+      <TopBar status={status} authSession={authSession} />
       <main className="mx-auto flex w-full min-h-0 max-w-7xl flex-1 flex-col gap-4 overflow-hidden px-6 py-4 lg:flex-row">
         <ChatPanel
           messages={messages}
@@ -207,6 +245,7 @@ export function AgentConsole() {
             onHarnessArnChange={setHarnessArn}
             qualifier={qualifier}
             onQualifierChange={setQualifier}
+            signedIn={authSession?.authenticated ?? false}
           />
           <SessionPanel sessionId={sessionId} onNewSession={handleNewSession} />
           <MetricsPanel metrics={metrics} />

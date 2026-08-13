@@ -1,5 +1,6 @@
 import { EventStreamCodec } from "@smithy/eventstream-codec";
 import { toUtf8, fromUtf8 } from "@smithy/util-utf8";
+import { getUserSession } from "@/lib/auth-session";
 import type { InvokeRequestBody } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -29,12 +30,26 @@ export async function POST(request: Request) {
     return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
-  const { jwt, region, harnessArn, qualifier, sessionId, messages } = body;
+  const { region, harnessArn, qualifier, sessionId, messages } = body;
 
-  if (!jwt || !region || !harnessArn || !sessionId || !Array.isArray(messages) || messages.length === 0) {
+  if (!region || !harnessArn || !sessionId || !Array.isArray(messages) || messages.length === 0) {
     return Response.json(
-      { error: "jwt, region, harnessArn, sessionId, and a non-empty messages array are required." },
+      { error: "region, harnessArn, sessionId, and a non-empty messages array are required." },
       { status: 400 }
+    );
+  }
+
+  // A signed-in OIDC session takes precedence over a manually pasted JWT —
+  // it's the more trustworthy path (server-verified, never exposed to the
+  // browser) and this is the only place the decrypted access token exists
+  // in memory, for exactly as long as this request takes.
+  const session = await getUserSession();
+  const bearerToken = session?.accessToken ?? body.jwt;
+
+  if (!bearerToken) {
+    return Response.json(
+      { error: "No JWT provided and no signed-in session — sign in or paste a bearer JWT." },
+      { status: 401 }
     );
   }
 
@@ -47,7 +62,7 @@ export async function POST(request: Request) {
     upstream = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${jwt}`,
+        Authorization: `Bearer ${bearerToken}`,
         "Content-Type": "application/json",
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": sessionId,
       },
