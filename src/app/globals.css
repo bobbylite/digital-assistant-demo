@@ -1,26 +1,92 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
+/* Tokens sampled from pingidentity.com/en.html's computed styles: off-white
+   canvas, near-black navy ink, flat red brand accent, no gradients.
+   Declared as plain :root custom properties (not directly inside @theme)
+   so the dark-mode blocks below can override them by cascade — @theme
+   inline just points Tailwind's color utilities at these variable names. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #fbfbfc;
+  --surface: #ffffff;
+  --ink: #051727;
+  --ink-muted: #5c6773;
+  --border: #e2e4e8;
+  --brand: #d20e0f;
+  --brand-dark: #a80b0c;
+  --brand-light: #fdeceb;
+  --success: #178a4c;
+  --danger: #d20e0f;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
+/* System preference, unless the user has explicitly picked light via the toggle. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    --canvas: #0b1420;
+    --surface: #111d2e;
+    --ink: #f2f4f7;
+    --ink-muted: #93a1b3;
+    --border: #243349;
+    --brand: #ff4d4d;
+    --brand-dark: #ff8080;
+    --brand-light: #3a1518;
+    --success: #34d399;
+    --danger: #ff4d4d;
   }
 }
 
+/* Explicit toggle wins in both directions, regardless of system preference. */
+:root[data-theme="dark"] {
+  --canvas: #0b1420;
+  --surface: #111d2e;
+  --ink: #f2f4f7;
+  --ink-muted: #93a1b3;
+  --border: #243349;
+  --brand: #ff4d4d;
+  --brand-dark: #ff8080;
+  --brand-light: #3a1518;
+  --success: #34d399;
+  --danger: #ff4d4d;
+}
+
+@theme inline {
+  --font-sans: var(--font-montserrat);
+  --font-mono: var(--font-geist-mono);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-border: var(--border);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-light: var(--brand-light);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: var(--color-brand);
+  color: white;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
 }
