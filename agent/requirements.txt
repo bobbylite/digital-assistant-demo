@@ -1,0 +1,5 @@
+bedrock-agentcore
+strands-agents
+mcp
+requests
+PyJWT

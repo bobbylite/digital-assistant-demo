@@ -6,11 +6,20 @@ interface Settings {
   defaultRegion: string;
   defaultQualifier: string;
   defaultHarnessArn: string;
+  defaultRuntimeMode: string;
+  defaultAgentRuntimeArn: string;
+  defaultLocalAgentUrl: string;
   agentClientId: string;
   agentScope: string;
   agentExchangeScope: string;
   hasAgentClientSecret: boolean;
 }
+
+const RUNTIME_MODE_OPTIONS = [
+  { value: "harness", label: "Harness (AWS-managed)" },
+  { value: "agentRuntime", label: "Agent Runtime (AWS, custom agent)" },
+  { value: "local", label: "Local Agent (this repo's agent/)" },
+];
 
 const inputClass =
   "w-full rounded-lg border border-border bg-canvas px-3 py-1.5 text-sm text-ink placeholder:text-ink-muted/60 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20";
@@ -29,6 +38,9 @@ export function SettingsButton({ onSaved }: { onSaved: () => void }) {
     defaultRegion: "",
     defaultQualifier: "",
     defaultHarnessArn: "",
+    defaultRuntimeMode: "harness",
+    defaultAgentRuntimeArn: "",
+    defaultLocalAgentUrl: "",
     agentClientId: "",
     agentClientSecret: "",
     agentScope: "",
@@ -60,6 +72,9 @@ export function SettingsButton({ onSaved }: { onSaved: () => void }) {
           defaultRegion: data.defaultRegion,
           defaultQualifier: data.defaultQualifier,
           defaultHarnessArn: data.defaultHarnessArn,
+          defaultRuntimeMode: data.defaultRuntimeMode,
+          defaultAgentRuntimeArn: data.defaultAgentRuntimeArn,
+          defaultLocalAgentUrl: data.defaultLocalAgentUrl,
           agentClientId: data.agentClientId,
           agentClientSecret: "",
           agentScope: data.agentScope,
@@ -77,6 +92,9 @@ export function SettingsButton({ onSaved }: { onSaved: () => void }) {
         defaultRegion: form.defaultRegion,
         defaultQualifier: form.defaultQualifier,
         defaultHarnessArn: form.defaultHarnessArn,
+        defaultRuntimeMode: form.defaultRuntimeMode,
+        defaultAgentRuntimeArn: form.defaultAgentRuntimeArn,
+        defaultLocalAgentUrl: form.defaultLocalAgentUrl,
         agentClientId: form.agentClientId,
         agentScope: form.agentScope,
         agentExchangeScope: form.agentExchangeScope,
@@ -189,6 +207,38 @@ export function SettingsButton({ onSaved }: { onSaved: () => void }) {
                         value={form.defaultHarnessArn}
                         onChange={(e) => setForm((f) => ({ ...f, defaultHarnessArn: e.target.value }))}
                         placeholder="arn:aws:bedrock-agentcore:..."
+                        className={`${inputClass} font-mono text-xs`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>Default runtime target</label>
+                      <select
+                        value={form.defaultRuntimeMode}
+                        onChange={(e) => setForm((f) => ({ ...f, defaultRuntimeMode: e.target.value }))}
+                        className={inputClass}
+                      >
+                        {RUNTIME_MODE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Agent Runtime ARN</label>
+                      <input
+                        value={form.defaultAgentRuntimeArn}
+                        onChange={(e) => setForm((f) => ({ ...f, defaultAgentRuntimeArn: e.target.value }))}
+                        placeholder="arn:aws:bedrock-agentcore:..."
+                        className={`${inputClass} font-mono text-xs`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>Local Agent URL</label>
+                      <input
+                        value={form.defaultLocalAgentUrl}
+                        onChange={(e) => setForm((f) => ({ ...f, defaultLocalAgentUrl: e.target.value }))}
+                        placeholder="http://localhost:8080"
                         className={`${inputClass} font-mono text-xs`}
                       />
                     </div>

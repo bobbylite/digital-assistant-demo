@@ -22,6 +22,13 @@ const ENV_KEYS = {
   defaultRegion: "DEFAULT_REGION",
   defaultQualifier: "DEFAULT_QUALIFIER",
   defaultHarnessArn: "DEFAULT_HARNESS_ARN",
+  // Which invocation target the Connection panel starts on — the AWS-managed
+  // harness, a deployed custom AgentCore Runtime, or the custom agent
+  // running locally (see agent/ at the repo root). Defaults to "harness" so
+  // existing deployments behave exactly as before until someone opts in.
+  defaultRuntimeMode: "DEFAULT_RUNTIME_MODE",
+  defaultAgentRuntimeArn: "DEFAULT_AGENT_RUNTIME_ARN",
+  defaultLocalAgentUrl: "DEFAULT_LOCAL_AGENT_URL",
   agentClientId: "AGENT_CLIENT_ID",
   agentClientSecret: "AGENT_CLIENT_SECRET",
   agentScope: "AGENT_SCOPE",
@@ -34,6 +41,9 @@ export interface SettingsInput {
   defaultRegion?: string;
   defaultQualifier?: string;
   defaultHarnessArn?: string;
+  defaultRuntimeMode?: string;
+  defaultAgentRuntimeArn?: string;
+  defaultLocalAgentUrl?: string;
   agentClientId?: string;
   // Omitted entirely (not just empty) means "leave unchanged" — this is
   // what lets the settings form never round-trip the current secret value
@@ -47,6 +57,9 @@ export interface RedactedSettings {
   defaultRegion: string;
   defaultQualifier: string;
   defaultHarnessArn: string;
+  defaultRuntimeMode: string;
+  defaultAgentRuntimeArn: string;
+  defaultLocalAgentUrl: string;
   agentClientId: string;
   agentScope: string;
   agentExchangeScope: string;
@@ -61,6 +74,9 @@ export function getConnectionDefaults() {
     defaultRegion: process.env.DEFAULT_REGION ?? "us-east-2",
     defaultQualifier: process.env.DEFAULT_QUALIFIER ?? "DEFAULT",
     defaultHarnessArn: process.env.DEFAULT_HARNESS_ARN ?? "",
+    defaultRuntimeMode: process.env.DEFAULT_RUNTIME_MODE ?? "harness",
+    defaultAgentRuntimeArn: process.env.DEFAULT_AGENT_RUNTIME_ARN ?? "",
+    defaultLocalAgentUrl: process.env.DEFAULT_LOCAL_AGENT_URL ?? "http://localhost:8080",
   };
 }
 

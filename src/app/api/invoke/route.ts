@@ -33,13 +33,26 @@ export async function POST(request: Request) {
     return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
-  const { region, harnessArn, qualifier, sessionId, messages } = body;
+  const { region, harnessArn, agentRuntimeArn, localAgentUrl, qualifier, sessionId, messages } = body;
+  const runtimeMode = body.runtimeMode ?? "harness";
 
-  if (!region || !harnessArn || !sessionId || !Array.isArray(messages) || messages.length === 0) {
+  if (!sessionId || !Array.isArray(messages) || messages.length === 0) {
     return Response.json(
-      { error: "region, harnessArn, sessionId, and a non-empty messages array are required." },
+      { error: "sessionId and a non-empty messages array are required." },
       { status: 400 }
     );
+  }
+  if (runtimeMode === "harness" && (!region || !harnessArn)) {
+    return Response.json({ error: "region and harnessArn are required for the harness runtime target." }, { status: 400 });
+  }
+  if (runtimeMode === "agentRuntime" && (!region || !agentRuntimeArn)) {
+    return Response.json(
+      { error: "region and agentRuntimeArn are required for the agentRuntime runtime target." },
+      { status: 400 }
+    );
+  }
+  if (runtimeMode === "local" && !localAgentUrl) {
+    return Response.json({ error: "localAgentUrl is required for the local runtime target." }, { status: 400 });
   }
 
   // Priority: RFC 8693 exchanged token (carries both the real user's
@@ -52,7 +65,11 @@ export async function POST(request: Request) {
   const bearerToken = exchanged?.accessToken ?? session?.accessToken ?? body.jwt;
   const tokenSource = exchanged?.accessToken ? "exchanged" : session?.accessToken ? "session" : "manual";
 
-  if (!bearerToken) {
+  // The local dev agent has no JWT authorizer configured (that only exists
+  // once deployed to AWS — see agent/README.md), so it's fine to invoke it
+  // anonymously for a quick local loop; the harness/agentRuntime targets
+  // always require a real bearer token.
+  if (!bearerToken && runtimeMode !== "local") {
     return Response.json(
       { error: "No JWT provided and no signed-in session — sign in or paste a bearer JWT." },
       { status: 401 }
@@ -67,24 +84,37 @@ export async function POST(request: Request) {
   // helper (which assumes the traced work finishes before returning).
   const span = tracer.startSpan("agentcore.invoke", {
     attributes: {
-      "aws.region": region,
-      "aws.harness_arn": harnessArn,
-      "aws.qualifier": qualifier || "DEFAULT",
+      "agentcore.runtime_mode": runtimeMode,
+      ...(region ? { "aws.region": region } : {}),
+      ...(runtimeMode === "harness" ? { "aws.harness_arn": harnessArn! } : {}),
+      ...(runtimeMode === "agentRuntime" ? { "aws.agent_runtime_arn": agentRuntimeArn! } : {}),
+      ...(runtimeMode === "local" ? { "agentcore.local_agent_url": localAgentUrl! } : {}),
+      ...(runtimeMode !== "local" ? { "aws.qualifier": qualifier || "DEFAULT" } : {}),
       "identity.token_source": tokenSource,
       ...(session?.sub ? { "identity.sub": session.sub } : {}),
     },
   });
 
+  // Harness (InvokeHarness): ARN is a query param. Custom AgentCore Runtime
+  // (InvokeAgentRuntime): ARN is escaped into the path instead — genuinely
+  // different, not a typo, confirmed against AWS's devguide. Local: this
+  // app's own custom agent running via `python main.py` (see agent/),
+  // serving the identical /invocations contract a deployed Runtime does.
   const url =
-    `https://bedrock-agentcore.${region}.amazonaws.com/harnesses/invoke` +
-    `?harnessArn=${encodeURIComponent(harnessArn)}&qualifier=${encodeURIComponent(qualifier || "DEFAULT")}`;
+    runtimeMode === "harness"
+      ? `https://bedrock-agentcore.${region}.amazonaws.com/harnesses/invoke` +
+        `?harnessArn=${encodeURIComponent(harnessArn!)}&qualifier=${encodeURIComponent(qualifier || "DEFAULT")}`
+      : runtimeMode === "agentRuntime"
+        ? `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodeURIComponent(agentRuntimeArn!)}/invocations` +
+          `?qualifier=${encodeURIComponent(qualifier || "DEFAULT")}`
+        : `${localAgentUrl!.replace(/\/+$/, "")}/invocations`;
 
   let upstream: globalThis.Response;
   try {
     upstream = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${bearerToken}`,
+        ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
         "Content-Type": "application/json",
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": sessionId,
       },
@@ -129,58 +159,112 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
       };
 
-      (async () => {
+      // Records token usage on the span the moment either upstream shape
+      // reports it — same audit-relevant payoff, two different wire formats.
+      const recordUsage = (usage: unknown) => {
+        if (!usage || typeof usage !== "object") return;
+        const u = usage as Record<string, unknown>;
+        if (typeof u.inputTokens === "number") span.setAttribute("token.input", u.inputTokens);
+        if (typeof u.outputTokens === "number") span.setAttribute("token.output", u.outputTokens);
+        if (typeof u.totalTokens === "number") span.setAttribute("token.total", u.totalTokens);
+      };
+
+      const decodeHarnessStream = async () => {
         let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
 
-        try {
-          while (true) {
-            const { done, value } = await upstreamReader.read();
-            if (done) break;
-            buffer = concat(buffer, value);
+        while (true) {
+          const { done, value } = await upstreamReader.read();
+          if (done) break;
+          buffer = concat(buffer, value);
 
-            while (buffer.length >= 4) {
-              const totalLength = new DataView(buffer.buffer, buffer.byteOffset, 4).getUint32(0, false);
-              if (buffer.length < totalLength) break;
+          while (buffer.length >= 4) {
+            const totalLength = new DataView(buffer.buffer, buffer.byteOffset, 4).getUint32(0, false);
+            if (buffer.length < totalLength) break;
 
-              const messageBytes = buffer.slice(0, totalLength);
-              buffer = buffer.slice(totalLength);
+            const messageBytes = buffer.slice(0, totalLength);
+            buffer = buffer.slice(totalLength);
 
+            try {
+              const decoded = codec.decode(messageBytes);
+              const eventType = headerValue(decoded.headers, ":event-type") ?? headerValue(decoded.headers, "event-type");
+              const messageType =
+                headerValue(decoded.headers, ":message-type") ?? headerValue(decoded.headers, "message-type");
+              const bodyText = toUtf8(decoded.body);
+
+              let payload: unknown;
               try {
-                const decoded = codec.decode(messageBytes);
-                const eventType = headerValue(decoded.headers, ":event-type") ?? headerValue(decoded.headers, "event-type");
-                const messageType =
-                  headerValue(decoded.headers, ":message-type") ?? headerValue(decoded.headers, "message-type");
-                const bodyText = toUtf8(decoded.body);
-
-                let payload: unknown;
-                try {
-                  payload = bodyText ? JSON.parse(bodyText) : {};
-                } catch {
-                  payload = { raw: bodyText };
-                }
-
-                // Token usage is the audit-relevant payoff of this whole
-                // call — record it on the span the moment AgentCore reports
-                // it, same place metrics used to come from client-side.
-                if (eventType === "metadata" && payload && typeof payload === "object") {
-                  const usage = (payload as { usage?: Record<string, unknown> }).usage;
-                  if (usage) {
-                    if (typeof usage.inputTokens === "number") span.setAttribute("token.input", usage.inputTokens);
-                    if (typeof usage.outputTokens === "number") span.setAttribute("token.output", usage.outputTokens);
-                    if (typeof usage.totalTokens === "number") span.setAttribute("token.total", usage.totalTokens);
-                  }
-                }
-
-                if (messageType === "exception") {
-                  span.setAttribute("agentcore.error_type", eventType ?? "unknown");
-                  send("agent-error", { eventType, ...(payload as object) });
-                } else {
-                  send(eventType || "unknown", payload);
-                }
-              } catch (err) {
-                send("stream-error", { message: err instanceof Error ? err.message : String(err) });
+                payload = bodyText ? JSON.parse(bodyText) : {};
+              } catch {
+                payload = { raw: bodyText };
               }
+
+              if (eventType === "metadata" && payload && typeof payload === "object") {
+                recordUsage((payload as { usage?: unknown }).usage);
+              }
+
+              if (messageType === "exception") {
+                span.setAttribute("agentcore.error_type", eventType ?? "unknown");
+                send("agent-error", { eventType, ...(payload as object) });
+              } else {
+                send(eventType || "unknown", payload);
+              }
+            } catch (err) {
+              send("stream-error", { message: err instanceof Error ? err.message : String(err) });
             }
+          }
+        }
+      };
+
+      // The custom agent (agentRuntime/local) speaks real text/event-stream
+      // SSE (`data: {...}\n\n` lines), not AWS's binary event-stream framing
+      // — that framing is harness-specific. Our own agent (see agent/main.py)
+      // already normalizes its events to this app's {"type": ..., ...}
+      // shape, so this is a straight relay, not a protocol decode.
+      const decodeCustomAgentStream = async () => {
+        const decoder = new TextDecoder();
+        let textBuffer = "";
+
+        while (true) {
+          const { done, value } = await upstreamReader.read();
+          if (done) break;
+          textBuffer += decoder.decode(value, { stream: true });
+
+          let boundary = textBuffer.indexOf("\n\n");
+          while (boundary !== -1) {
+            const rawBlock = textBuffer.slice(0, boundary);
+            textBuffer = textBuffer.slice(boundary + 2);
+            boundary = textBuffer.indexOf("\n\n");
+
+            const dataLine = rawBlock.split("\n").find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+
+            let payload: unknown;
+            try {
+              payload = JSON.parse(dataLine.slice("data: ".length));
+            } catch {
+              payload = {};
+            }
+            const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+            // Our own agent-error type, or the SDK's own generic
+            // {"error", "error_type", "message"} shape on an unhandled
+            // exception escaping the entrypoint — either way, surface it as
+            // agent-error so the client's existing handling catches it.
+            const type = typeof obj.type === "string" ? obj.type : obj.error ? "agent-error" : "unknown";
+
+            if (type === "metadata") recordUsage(obj.usage);
+            if (type === "agent-error") span.setAttribute("agentcore.error_type", type);
+
+            send(type, obj);
+          }
+        }
+      };
+
+      (async () => {
+        try {
+          if (runtimeMode === "harness") {
+            await decodeHarnessStream();
+          } else {
+            await decodeCustomAgentStream();
           }
           endSpan(SpanStatusCode.OK);
         } catch (err) {

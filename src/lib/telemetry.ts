@@ -49,6 +49,11 @@ function hrTimeToMs(t: readonly [number, number]): number {
 // attribute key that even *looks* like it might hold a secret is dropped
 // before it ever lands in the in-memory store or console output.
 const SUSPICIOUS_KEY_PATTERN = /token|secret|password|authoriz/i;
+// Known-safe keys that happen to contain "token" as a substring without
+// holding a credential value (a usage count, or the name of which
+// credential path served a request) — exempted explicitly rather than
+// narrowing the pattern above, so it still catches anything unanticipated.
+const SAFE_KEY_ALLOWLIST = new Set(["token.input", "token.output", "token.total", "identity.token_source"]);
 
 // Registering a global TracerProvider (below) also switches on Next.js's
 // *own* built-in OpenTelemetry instrumentation — spans like "resolve page
@@ -68,7 +73,7 @@ class RecordingSpanProcessor implements SpanProcessor {
     const ctx = span.spanContext();
     const attributes: Record<string, string | number | boolean> = {};
     for (const [key, value] of Object.entries(span.attributes)) {
-      if (SUSPICIOUS_KEY_PATTERN.test(key)) continue;
+      if (!SAFE_KEY_ALLOWLIST.has(key) && SUSPICIOUS_KEY_PATTERN.test(key)) continue;
       if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
         attributes[key] = value;
       }

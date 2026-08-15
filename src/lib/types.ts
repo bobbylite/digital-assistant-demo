@@ -5,13 +5,26 @@ export interface ChatMessage {
   content: Array<{ text: string }>;
 }
 
+// Which AgentCore invocation target this request is for — the AWS-managed
+// harness (InvokeHarness), a deployed custom AgentCore Runtime
+// (InvokeAgentRuntime), or the custom agent running locally (see agent/ at
+// the repo root). Defaults to "harness" when omitted, for backward
+// compatibility with any caller not yet sending it.
+export type RuntimeMode = "harness" | "agentRuntime" | "local";
+
 export interface InvokeRequestBody {
   // Optional: omitted when the browser has a signed-in OIDC session — the
   // route handler uses the session cookie's access token instead. Required
   // when there's no session (manual-paste mode).
   jwt?: string;
-  region: string;
-  harnessArn: string;
+  // Required for "harness"/"agentRuntime" (part of the invocation URL);
+  // unused for "local".
+  region?: string;
+  runtimeMode?: RuntimeMode;
+  // Exactly one of these three is required, depending on runtimeMode.
+  harnessArn?: string;
+  agentRuntimeArn?: string;
+  localAgentUrl?: string;
   qualifier?: string;
   sessionId: string;
   messages: ChatMessage[];

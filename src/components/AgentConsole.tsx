@@ -7,7 +7,7 @@ import { ConnectionPanel } from "./ConnectionPanel";
 import { TelemetryPanel } from "./TelemetryPanel";
 import { EventConsole, type StreamEvent } from "./EventConsole";
 import { generateSessionId } from "@/lib/session";
-import type { AuthSession, ChatMessage } from "@/lib/types";
+import type { AuthSession, ChatMessage, RuntimeMode } from "@/lib/types";
 
 const STORAGE_KEY = "agentcore-console-connection";
 
@@ -22,7 +22,10 @@ const AUTH_ERROR_COPY: Record<string, string> = {
 export function AgentConsole() {
   const [jwt, setJwt] = useState("");
   const [region, setRegion] = useState("");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("harness");
   const [harnessArn, setHarnessArn] = useState("");
+  const [agentRuntimeArn, setAgentRuntimeArn] = useState("");
+  const [localAgentUrl, setLocalAgentUrl] = useState("");
   const [qualifier, setQualifier] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -54,6 +57,9 @@ export function AgentConsole() {
     let restoredRegion = false;
     let restoredQualifier = false;
     let restoredHarnessArn = false;
+    let restoredRuntimeMode = false;
+    let restoredAgentRuntimeArn = false;
+    let restoredLocalAgentUrl = false;
     try {
       const saved = sessionStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -71,6 +77,18 @@ export function AgentConsole() {
           setQualifier(parsed.qualifier);
           restoredQualifier = true;
         }
+        if (parsed.runtimeMode) {
+          setRuntimeMode(parsed.runtimeMode);
+          restoredRuntimeMode = true;
+        }
+        if (parsed.agentRuntimeArn) {
+          setAgentRuntimeArn(parsed.agentRuntimeArn);
+          restoredAgentRuntimeArn = true;
+        }
+        if (parsed.localAgentUrl) {
+          setLocalAgentUrl(parsed.localAgentUrl);
+          restoredLocalAgentUrl = true;
+        }
       }
     } catch {
       // ignore malformed/unavailable storage
@@ -82,11 +100,23 @@ export function AgentConsole() {
     // already restore, so a slower fetch never clobbers an in-progress edit.
     fetch("/api/config")
       .then((res) => res.json())
-      .then((data: { defaultRegion?: string; defaultQualifier?: string; defaultHarnessArn?: string }) => {
-        if (!restoredRegion && data.defaultRegion) setRegion(data.defaultRegion);
-        if (!restoredQualifier && data.defaultQualifier) setQualifier(data.defaultQualifier);
-        if (!restoredHarnessArn && data.defaultHarnessArn) setHarnessArn(data.defaultHarnessArn);
-      })
+      .then(
+        (data: {
+          defaultRegion?: string;
+          defaultQualifier?: string;
+          defaultHarnessArn?: string;
+          defaultRuntimeMode?: RuntimeMode;
+          defaultAgentRuntimeArn?: string;
+          defaultLocalAgentUrl?: string;
+        }) => {
+          if (!restoredRegion && data.defaultRegion) setRegion(data.defaultRegion);
+          if (!restoredQualifier && data.defaultQualifier) setQualifier(data.defaultQualifier);
+          if (!restoredHarnessArn && data.defaultHarnessArn) setHarnessArn(data.defaultHarnessArn);
+          if (!restoredRuntimeMode && data.defaultRuntimeMode) setRuntimeMode(data.defaultRuntimeMode);
+          if (!restoredAgentRuntimeArn && data.defaultAgentRuntimeArn) setAgentRuntimeArn(data.defaultAgentRuntimeArn);
+          if (!restoredLocalAgentUrl && data.defaultLocalAgentUrl) setLocalAgentUrl(data.defaultLocalAgentUrl);
+        }
+      )
       .catch(() => {
         // Non-fatal — fields just stay empty until typed in by hand.
       });
@@ -107,11 +137,14 @@ export function AgentConsole() {
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ jwt, region, harnessArn, qualifier }));
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ jwt, region, harnessArn, qualifier, runtimeMode, agentRuntimeArn, localAgentUrl })
+      );
     } catch {
       // sessionStorage unavailable (e.g. private mode) — non-fatal
     }
-  }, [jwt, region, harnessArn, qualifier]);
+  }, [jwt, region, harnessArn, qualifier, runtimeMode, agentRuntimeArn, localAgentUrl]);
 
   function logEvent(type: string, payload: unknown) {
     setEvents((prev) => {
@@ -191,11 +224,23 @@ export function AgentConsole() {
     if (!trimmed || status === "connecting" || status === "streaming") return;
 
     const signedIn = authSession?.authenticated ?? false;
-    if ((!signedIn && !jwt.trim()) || !harnessArn.trim() || !region.trim()) {
+    const targetMissing =
+      runtimeMode === "harness"
+        ? !harnessArn.trim() || !region.trim()
+        : runtimeMode === "agentRuntime"
+          ? !agentRuntimeArn.trim() || !region.trim()
+          : !localAgentUrl.trim();
+    if ((!signedIn && !jwt.trim() && runtimeMode !== "local") || targetMissing) {
+      const targetLabel =
+        runtimeMode === "harness"
+          ? "region and harness ARN"
+          : runtimeMode === "agentRuntime"
+            ? "region and agent runtime ARN"
+            : "a local agent URL";
       setError(
-        signedIn
-          ? "Region and harness ARN are required."
-          : "Sign in, or paste a JWT, plus region and harness ARN, are required."
+        signedIn || runtimeMode === "local"
+          ? `${targetLabel[0].toUpperCase()}${targetLabel.slice(1)} are required.`
+          : `Sign in, or paste a JWT, plus ${targetLabel}, are required.`
       );
       return;
     }
@@ -218,7 +263,17 @@ export function AgentConsole() {
       response = await fetch("/api/invoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jwt, region, harnessArn, qualifier, sessionId, messages: nextMessages }),
+        body: JSON.stringify({
+          jwt,
+          region,
+          runtimeMode,
+          harnessArn,
+          agentRuntimeArn,
+          localAgentUrl,
+          qualifier,
+          sessionId,
+          messages: nextMessages,
+        }),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error reaching the local proxy.");
@@ -283,8 +338,14 @@ export function AgentConsole() {
             onJwtChange={setJwt}
             region={region}
             onRegionChange={setRegion}
+            runtimeMode={runtimeMode}
+            onRuntimeModeChange={setRuntimeMode}
             harnessArn={harnessArn}
             onHarnessArnChange={setHarnessArn}
+            agentRuntimeArn={agentRuntimeArn}
+            onAgentRuntimeArnChange={setAgentRuntimeArn}
+            localAgentUrl={localAgentUrl}
+            onLocalAgentUrlChange={setLocalAgentUrl}
             qualifier={qualifier}
             onQualifierChange={setQualifier}
             signedIn={authSession?.authenticated ?? false}
